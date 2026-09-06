@@ -1,0 +1,38 @@
+# Node dependencies
+node_modules/
+*/node_modules/
+
+# Profile & credentials (sensitive!)
+bot/profile.json
+bot/email.config.json
+bot/session/
+bot/output/
+
+# Database
+db/*.db
+db/*.db-shm
+db/*.db-wal
+
+# Resume (personal)
+*.pdf
+*.docx
+
+# Build output
+dist/
+dashboard/dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+*.env
+bot/.env
+.env.local
+.env.*
+

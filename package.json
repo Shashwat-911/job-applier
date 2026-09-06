@@ -1,0 +1,25 @@
+{
+  "name": "job-application-suite",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Automated job application suite with Playwright, Express API, and React dashboard",
+  "workspaces": [
+    "bot",
+    "dashboard"
+  ],
+  "scripts": {
+    "start:bot": "node bot/index.js",
+    "start:server": "node bot/server.js",
+    "start:dashboard": "npm run dev --workspace=dashboard",
+    "start:all": "concurrently \"npm run start:server\" \"npm run start:dashboard\"",
+    "start:win": "start.bat",
+    "start:unix": "bash start.sh",
+    "setup": "npm install && npm run playwright:install",
+    "playwright:install": "npx playwright install chromium",
+    "harvest": "node bot/harvestSessions.js",
+    "db:init": "node db/tracker.js"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
