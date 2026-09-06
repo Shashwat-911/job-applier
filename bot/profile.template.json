@@ -1,0 +1,82 @@
+{
+  "personal": {
+    "name": "",
+    "email": "",
+    "phone": "",
+    "location": "",
+    "linkedin": "",
+    "portfolio": ""
+  },
+  "professional": {
+    "title": "",
+    "yearsExperience": 0,
+    "summary": "",
+    "skills": [],
+    "expectedSalary": "",
+    "noticePeriod": "30 days",
+    "workMode": "Any",
+    "resumePath": "./resume.pdf"
+  },
+  "qa": {
+    "authorized": "Yes",
+    "education": "",
+    "whyThisCompany": "",
+    "relocation": "No"
+  },
+  "search": {
+    "roles": [
+      "AI & ML Engineer", "AI Engineer", "ML Engineer", "Machine Learning Engineer",
+      "AI Developer", "LLM Engineer", "Generative AI Engineer", "AI Research Engineer",
+      "NLP Engineer", "Computer Vision Engineer", "Software Engineer",
+      "Software Development Engineer", "Backend Developer", "Backend Engineer",
+      "SDE", "SDE-1", "Junior Software Engineer", "Associate Software Engineer",
+      "Python Developer", "Java Developer", "Full Stack Developer", "Full Stack Engineer",
+      "MERN Stack Developer", "Full Stack Python Developer", "Data Engineer",
+      "Data Scientist", "MLOps Engineer", "Data Analyst", "AI Data Engineer",
+      "Software Engineer Intern", "AI Engineer Intern", "Backend Intern",
+      "SDE Intern", "Junior AI Engineer", "Junior Backend Developer"
+    ],
+    "skipKeywords": [
+      "Senior", "Sr.", "Lead", "Principal", "Staff", "Manager", "Director",
+      "Head of", "VP", "Vice President", "10+ years", "8+ years", "7+ years",
+      "6+ years", "5+ years", "Team Lead", "Tech Lead", "Architect",
+      "Solution Architect", "Chief", "CTO", "Engineering Manager",
+      "People Manager", "Senior Engineer", "Senior Developer", "Senior Scientist",
+      "Lead Engineer", "Lead Developer", "Principal Engineer", "Staff Engineer",
+      "Distinguished", "Fellow", "Unpaid", "Stipend only", "No stipend",
+      "Sales", "Marketing", "HR", "Recruiter", "Non-technical", "Content Writer",
+      "SEO", "Social Media", "Accounts", "Finance", "Legal", "Mechanical",
+      "Civil", "Electrical", "Hardware", "Embedded", "VLSI", "PCB"
+    ],
+    "platforms": [
+      "linkedin", "indeed", "naukri", "wellfound", "internshala",
+      "shine", "foundit", "glassdoor", "unstop", "cutshort", "hirist",
+      "remoteok", "workatastartup"
+    ],
+    "location": "Bengaluru",
+    "maxPerRun": 20,
+    "postedWithin": "week"
+  },
+  "settings": {
+    "delayMin": 1000,
+    "delayMax": 3000,
+    "retryOnBlock": true,
+    "blockWaitSeconds": 60,
+    "minBetweenApplicationsMs": 3000
+  },
+  "credentials": {
+    "default": { "email": "", "password": "" },
+    "linkedin": { "email": "", "password": "" },
+    "indeed": { "email": "", "password": "" },
+    "naukri": { "email": "", "password": "" },
+    "wellfound": { "email": "", "password": "" },
+    "internshala": { "email": "", "password": "" },
+    "shine": { "email": "", "password": "" },
+    "foundit": { "email": "", "password": "" },
+    "glassdoor": { "email": "", "password": "" },
+    "unstop": { "email": "", "password": "" },
+    "cutshort": { "email": "", "password": "" },
+    "hirist": { "email": "", "password": "" },
+    "workatastartup": { "email": "", "password": "" }
+  }
+}
