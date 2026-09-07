@@ -154,7 +154,7 @@ async function main() {
     locale:    'en-US',
   });
 
-  const page = await context.newPage();
+  let page = await context.newPage();
 
   // Remove Playwright fingerprints
   await context.addInitScript(() => {
