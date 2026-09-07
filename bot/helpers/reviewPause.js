@@ -16,23 +16,50 @@ const readline = require('readline');
  * @returns {Promise<'submit'|'skip'|'quit'>}
  */
 async function reviewPause(jobTitle, company, extra = {}) {
+  let title = typeof jobTitle === 'string' ? jobTitle : '';
+  let comp = typeof company === 'string' ? company : '';
+  let info = extra || {};
+
+  if (typeof jobTitle === 'object' && company && typeof company === 'object') {
+    // Called as: reviewPause(page, { jobTitle, company, ... })
+    title = company.jobTitle || company.title || 'Role';
+    comp  = company.company || 'Company';
+    info  = company;
+  } else if (!comp && typeof extra === 'object' && extra.company) {
+    comp = extra.company;
+  }
+
+  // Check if profile or environment is configured for unattended batch apply
+  try {
+    if (process.env.BATCH_APPLY_ACTIVE === 'true') {
+      console.log(`  ⚡ [Batch Mode] Auto-approving application for ${title || 'Role'} @ ${comp || 'Company'}`);
+      return 'submit';
+    }
+    const { loadProfile } = require('../config');
+    const prof = loadProfile();
+    if (prof?.settings?.reviewMode === 'batch' || prof?.settings?.batchApplyActive) {
+      console.log(`  ⚡ [Batch Mode] Auto-approving application for ${title || 'Role'} @ ${comp || 'Company'}`);
+      return 'submit';
+    }
+  } catch (_) {}
+
   return new Promise((resolve) => {
     const lines = [
       '',
       '┌─────────────────────────────────────────────────────┐',
       `│  ⏸  REVIEW APPLICATION                              │`,
-      `│  📌 ${truncate(jobTitle, 46).padEnd(47)}│`,
-      `│  🏢 ${truncate(company,  46).padEnd(47)}│`,
+      `│  📌 ${truncate(title || 'Role', 46).padEnd(47)}│`,
+      `│  🏢 ${truncate(comp || 'Company', 46).padEnd(47)}│`,
     ];
 
-    if (extra.location) {
-      lines.push(`│  📍 ${truncate(extra.location, 46).padEnd(47)}│`);
+    if (info.location) {
+      lines.push(`│  📍 ${truncate(info.location, 46).padEnd(47)}│`);
     }
-    if (extra.salary) {
-      lines.push(`│  💰 ${truncate(extra.salary, 46).padEnd(47)}│`);
+    if (info.salary) {
+      lines.push(`│  💰 ${truncate(info.salary, 46).padEnd(47)}│`);
     }
-    if (extra.url) {
-      lines.push(`│  🔗 ${truncate(extra.url, 46).padEnd(47)}│`);
+    if (info.url) {
+      lines.push(`│  🔗 ${truncate(info.url, 46).padEnd(47)}│`);
     }
 
     lines.push(

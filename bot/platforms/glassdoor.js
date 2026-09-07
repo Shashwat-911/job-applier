@@ -83,6 +83,12 @@ async function search(page, profile) {
 
             if (!titleEl) return;
 
+            const cardText = (card.innerText || '').toLowerCase();
+            const hasEasyApply = card.querySelector('[data-test="easy-apply"], [class*="EasyApply"], [data-test*="easyApply"]') !== null ||
+                                 cardText.includes('easy apply') ||
+                                 cardText.includes('easily apply');
+            if (!hasEasyApply) return; // Only collect Easy Apply jobs that the bot can submit!
+
             results.push({
               title: titleEl.innerText.trim(),
               company: companyEl ? companyEl.innerText.trim() : 'Company',
@@ -90,6 +96,7 @@ async function search(page, profile) {
               jobUrl: titleEl.href ? titleEl.href.split('?')[0] : '',
               salary: salEl ? salEl.innerText.trim() : '',
               platform: 'glassdoor',
+              hasEasyApply: true,
             });
           } catch (_) {}
         });

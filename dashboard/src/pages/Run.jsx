@@ -27,6 +27,8 @@ export default function RunPage({ botStatus, setBotStatus }) {
   const [currentJob, setCurrentJob] = useState(null);
   const [error,      setError]      = useState('');
   const [copied,     setCopied]     = useState(false);
+  const [reviewQueue, setReviewQueue] = useState([]);
+  const [batchNotice, setBatchNotice] = useState(null);
   const logRef = useRef(null);
   const esRef  = useRef(null);
 
@@ -35,6 +37,13 @@ export default function RunPage({ botStatus, setBotStatus }) {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
+
+  // Load existing review queue on mount
+  useEffect(() => {
+    api.getReviewQueue().then(res => {
+      if (res?.jobs?.length) setReviewQueue(res.jobs);
+    }).catch(() => {});
+  }, []);
 
   const sc = STATUS_CONFIG[botStatus] || STATUS_CONFIG.idle;
 
@@ -50,6 +59,17 @@ export default function RunPage({ botStatus, setBotStatus }) {
     es.addEventListener('log', e => {
       const { line } = JSON.parse(e.data);
       setLogs(l => [...l.slice(-500), line]); // keep last 500 lines
+    });
+
+    es.addEventListener('batch_collected', e => {
+      const { count, jobs } = JSON.parse(e.data);
+      setReviewQueue(jobs || []);
+      setBatchNotice(`🎯 Threshold Reached: ${count} Pure Software / AI & ML jobs (≥ 6 LPA) collected!`);
+    });
+
+    es.addEventListener('queue_cleared', () => {
+      setReviewQueue([]);
+      setBatchNotice(null);
     });
 
     es.addEventListener('job', e => {
@@ -95,11 +115,57 @@ export default function RunPage({ botStatus, setBotStatus }) {
     } catch(e) { setError(e.message); }
   }
 
+  async function handleApplyJob(index) {
+    try {
+      setError('');
+      await api.applyQueueJob(index);
+    } catch(e) { setError(e.message); }
+  }
+
+  async function handleApplyAll() {
+    try {
+      setError('');
+      await api.applyQueueJob(); // apply all
+    } catch(e) { setError(e.message); }
+  }
+
+  async function handleSkipJob(index) {
+    try {
+      setError('');
+      await api.skipQueueJob(index);
+      setReviewQueue(prev => prev.filter((_, i) => i !== index));
+    } catch(e) { setError(e.message); }
+  }
+
+  async function clearBatchQueue() {
+    try {
+      await api.clearReviewQueue();
+      setReviewQueue([]);
+      setBatchNotice(null);
+    } catch(e) { setError(e.message); }
+  }
+
   const isRunning = botStatus === 'running' || botStatus === 'paused';
   const isPaused  = botStatus === 'paused';
 
   return (
     <div className="max-w-4xl space-y-5">
+
+      {/* Batch Collection Alert Notification */}
+      {batchNotice && (
+        <div className="p-4 bg-emerald-500/15 border border-emerald-500/30 rounded-xl flex items-center justify-between animate-fade-in">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">🎉</span>
+            <div>
+              <div className="font-semibold text-emerald-300">{batchNotice}</div>
+              <div className="text-xs text-emerald-400/80">Filtered strictly for pure engineering roles above ₹6,00,000/yr (6 LPA). Ready on localhost!</div>
+            </div>
+          </div>
+          <button onClick={() => setBatchNotice(null)} className="text-xs text-emerald-400 hover:underline px-2 py-1">
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Status + controls */}
       <div className="card p-6">
@@ -110,10 +176,10 @@ export default function RunPage({ botStatus, setBotStatus }) {
               <span className={clsx('text-lg font-bold', sc.color)}>{sc.label}</span>
             </div>
             <p className="text-slate-500 text-sm">
-              {botStatus === 'idle'    && 'Bot is ready. Configure your profile and targets first.'}
-              {botStatus === 'running' && 'Searching and applying to jobs across configured platforms…'}
+              {botStatus === 'idle'    && 'Bot is ready. Running directly on localhost:3001 with pure Software/AI-ML filter.'}
+              {botStatus === 'running' && 'Continuously collecting qualifying Software & AI/ML jobs (≥ 6 LPA)…'}
               {botStatus === 'paused'  && 'Review the job below and choose to submit, skip, or quit.'}
-              {botStatus === 'done'    && 'Run complete! Check the Tracker for results.'}
+              {botStatus === 'done'    && 'Collection run complete! Review collected jobs below or check Tracker.'}
               {botStatus === 'error'   && 'An error occurred. Check the terminal log below.'}
             </p>
           </div>
@@ -140,7 +206,7 @@ export default function RunPage({ botStatus, setBotStatus }) {
           <div className="mt-4 p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl">
             <p className="text-amber-400 font-medium mb-3 flex items-center gap-2">
               <Circle size={14} className="animate-pulse" />
-              Human review required — the bot has pre-filled the application form
+              Human review requested — form is filled and ready for submission
             </p>
             <div className="flex gap-3">
               <button onClick={() => sendAction('s')} className="btn-success flex-1 justify-center py-3">
@@ -159,6 +225,87 @@ export default function RunPage({ botStatus, setBotStatus }) {
           </div>
         )}
       </div>
+
+      {/* Review Queue (Batch collected pure engineering jobs) */}
+      {reviewQueue.length > 0 && (
+        <div className="card p-6 border-brand-500/30">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-bold text-slate-100">🎯 Desired Jobs Queue</h3>
+                <span className="badge bg-brand-500/20 text-brand-300 border border-brand-500/30">{reviewQueue.length} Qualifying</span>
+                <span className="badge bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">≥ 6 LPA</span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">Verified pure Software / AI & ML roles. Review below and submit automatically with one click.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleApplyAll}
+                disabled={botStatus === 'running'}
+                className="btn-success text-xs px-3.5 py-1.5 flex items-center gap-1.5 shadow-sm"
+                title="Automatically submit applications to all queued jobs"
+              >
+                <Check size={14} />
+                Submit All ({reviewQueue.length})
+              </button>
+              <button onClick={clearBatchQueue} className="btn-secondary text-xs px-3 py-1.5">
+                Clear Queue
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-2.5 max-h-88 overflow-y-auto pr-1">
+            {reviewQueue.map((job, idx) => (
+              <div key={idx} className="p-3.5 bg-slate-900/60 border border-slate-800 hover:border-slate-700 rounded-lg flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  <div className="w-8 h-8 rounded-lg bg-brand-600/20 text-brand-400 flex items-center justify-center text-sm font-semibold shrink-0">
+                    {idx + 1}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-medium text-slate-200 text-sm truncate">{job.title}</div>
+                    <div className="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
+                      <span>{job.company || 'Unknown Company'}</span>
+                      {job.location && <span>• 📍 {job.location}</span>}
+                      {job.salary && <span className="text-emerald-400">• 💰 {job.salary}</span>}
+                      <span className="capitalize">• 🌐 {job.platform}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {job.jobUrl && (
+                    <a
+                      href={job.jobUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-slate-400 hover:text-slate-200 px-2 py-1"
+                    >
+                      View
+                    </a>
+                  )}
+                  <button
+                    onClick={() => handleApplyJob(idx)}
+                    disabled={botStatus === 'running'}
+                    className="btn-success text-xs px-2.5 py-1 flex items-center gap-1"
+                    title="Automatically fill and submit this application"
+                  >
+                    <Check size={12} />
+                    Submit
+                  </button>
+                  <button
+                    onClick={() => handleSkipJob(idx)}
+                    className="btn-secondary text-xs px-2.5 py-1 flex items-center gap-1 text-slate-400 hover:text-red-400"
+                    title="Skip and remove this job from queue"
+                  >
+                    <SkipForward size={12} />
+                    Skip
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Current job card */}
       {currentJob && (
@@ -183,7 +330,7 @@ export default function RunPage({ botStatus, setBotStatus }) {
       <div className="card p-5">
         <div className="flex items-center gap-2 mb-3">
           <Terminal size={15} className="text-brand-400" />
-          <span className="text-sm font-medium text-slate-300">Bot Output</span>
+          <span className="text-sm font-medium text-slate-300">Bot Output (localhost:3001)</span>
           <span className="ml-auto text-xs text-slate-600">{logs.length} lines</span>
           {logs.length > 0 && (
             <div className="flex items-center gap-3">

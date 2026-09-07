@@ -20,6 +20,66 @@ async function humanDelay(min = 1000, max = 3000) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// dismissCookieBanners — clear OneTrust and overlay modals
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Dismiss cookie consent banners (OneTrust, GDPR, etc.) that intercept clicks.
+ * @param {import('playwright').Page|import('playwright').Frame} page
+ */
+async function dismissCookieBanners(page) {
+  if (!page) return;
+  try {
+    const acceptSelectors = [
+      '#onetrust-accept-btn-handler',
+      '#onetrust-reject-all-handler',
+      'button#accept-recommended-btn-handler',
+      '.onetrust-close-btn-handler',
+      'button:has-text("Accept all cookies")',
+      'button:has-text("Accept All")',
+      'button:has-text("Accept all")',
+      'button:has-text("Allow all cookies")',
+      'button:has-text("Allow all")',
+      'button:has-text("I agree")',
+      'button[aria-label="Close"]',
+    ];
+
+    for (const sel of acceptSelectors) {
+      const btn = await page.$(sel).catch(() => null);
+      if (btn) {
+        const isVis = await btn.isVisible().catch(() => false);
+        if (isVis) {
+          await btn.click({ force: true, timeout: 1000 }).catch(() => {});
+          break;
+        }
+      }
+    }
+
+    // Forcefully remove OneTrust and overlay wrappers from DOM if still obstructing
+    await page.evaluate(() => {
+      const idsToRemove = [
+        'onetrust-consent-sdk',
+        'onetrust-banner-sdk',
+        'onetrust-style',
+      ];
+      idsToRemove.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+      });
+      document.querySelectorAll('.onetrust-pc-dark-filter, .ot-fade-in, [id*="onetrust"]').forEach(el => el.remove());
+      if (document.body) {
+        document.body.style.overflow = 'auto';
+        document.body.style.pointerEvents = 'auto';
+      }
+      if (document.documentElement) {
+        document.documentElement.style.overflow = 'auto';
+        document.documentElement.style.pointerEvents = 'auto';
+      }
+    }).catch(() => {});
+  } catch (_) {}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // fillField — universal field filler
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -33,6 +93,7 @@ async function humanDelay(min = 1000, max = 3000) {
  * @returns {Promise<boolean>}   true if a field was filled
  */
 async function fillField(page, selectors, value) {
+  await dismissCookieBanners(page);
   for (const selector of selectors) {
     try {
       const el = await page.$(selector);
@@ -70,12 +131,12 @@ async function fillField(page, selectors, value) {
       if (type === 'checkbox') {
         const checked = await el.isChecked();
         const shouldCheck = value === true || value === 'true' || value === 'yes' || value === 'Yes';
-        if (shouldCheck !== checked) await el.click();
+        if (shouldCheck !== checked) await el.click({ force: true }).catch(() => el.click());
         return true;
       }
 
       if (type === 'radio') {
-        await el.click();
+        await el.click({ force: true }).catch(() => el.click());
         return true;
       }
 
@@ -85,8 +146,12 @@ async function fillField(page, selectors, value) {
       }
 
       // Default: text / tel / email / textarea
-      await el.click({ clickCount: 3 }); // select all existing text
-      await el.fill(String(value));
+      try {
+        await el.fill(String(value));
+      } catch (_) {
+        await el.click({ clickCount: 3, force: true }).catch(() => {});
+        await el.fill(String(value));
+      }
       return true;
 
     } catch (err) {
@@ -108,7 +173,8 @@ async function fillField(page, selectors, value) {
  */
 async function uploadResume(page, resumePath) {
   try {
-    const absPath = path.resolve(resumePath);
+    const cleanPath = (resumePath || '').replace(/^["']|["']$/g, '').trim();
+    const absPath = path.resolve(cleanPath);
     const fileInput = await page.$('input[type="file"]');
     if (!fileInput) {
       console.warn('  ⚠️  No file input found on page');
@@ -128,24 +194,30 @@ async function uploadResume(page, resumePath) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 const CAPTCHA_SELECTORS = [
-  // reCAPTCHA
-  'iframe[src*="recaptcha"]',
-  '#recaptcha',
-  '.g-recaptcha',
-  // hCaptcha
-  'iframe[src*="hcaptcha"]',
-  '.h-captcha',
-  // Cloudflare
+  // Interactive reCAPTCHA challenge frame (bframe = interactive challenge, anchor = invisible badge)
+  'iframe[src*="recaptcha/api2/bframe"]',
+  'iframe[src*="recaptcha/enterprise/bframe"]',
+  '#recaptcha-anchor-label',
+  // hCaptcha interactive frame
+  'iframe[src*="hcaptcha.com/box"]',
+  'iframe[src*="hcaptcha.com/challenge"]',
+  // Cloudflare & Turnstile challenges
+  'iframe[src*="challenges.cloudflare.com"]',
+  '#challenge-stage',
+  '#challenge-form',
   '#cf-challenge-form',
   '.cf-browser-verification',
-  // Generic
-  '[class*="captcha"]',
-  '[id*="captcha"]',
-  '[data-callback*="captcha"]',
-  // LinkedIn specific
+  '#challenge-running',
+  '.ray-id',
+  '.cf-turnstile-wrapper',
+  '[data-translate="blocked_why_headline"]',
+  // LinkedIn specific challenge
   '.challenge-dialog',
-  // Indeed specific
+  // Indeed specific interactive challenge
   '#indeed-captcha',
+  '#challenge-container',
+  'form#captcha-form',
+  'div#captcha-box',
 ];
 
 /**
@@ -169,17 +241,46 @@ async function detectCaptcha(page) {
     }
   }
 
-  // Also check page title / URL
-  const url   = page.url();
-  const title = await page.title().catch(() => '');
+  // Also check page title / URL (avoid false positive on 'robotics')
+  const url   = (page.url() || '').toLowerCase();
+  const title = (await page.title().catch(() => '')).toLowerCase();
   const blockedIndicators = [
-    'captcha', 'robot', 'verification', 'security check', 'verify you are human'
+    'recaptcha',
+    'hcaptcha',
+    'security check',
+    'verify you are human',
+    'just a moment...',
+    'request blocked',
+    'additional verification required',
+    'attention required',
+    'checking if the site connection is secure',
+    'are you a robot',
+    'not a robot',
   ];
   for (const indicator of blockedIndicators) {
-    if (url.toLowerCase().includes(indicator) || title.toLowerCase().includes(indicator)) {
+    if (url.includes(indicator) || title.includes(indicator)) {
       console.warn(`  🤖 CAPTCHA/block detected via URL/title: "${title}" | ${url}`);
       return true;
     }
+  }
+
+  // Check visible page body text for challenge phrases if title is ambiguous
+  try {
+    const bodyText = await page.evaluate(() => {
+      const b = document.body;
+      return b ? (b.innerText || '').slice(0, 1000).toLowerCase() : '';
+    });
+    if (
+      bodyText.includes('verifying you are human') ||
+      bodyText.includes('checking if the site connection is secure') ||
+      bodyText.includes('additional verification required') ||
+      (bodyText.includes('ray id:') && bodyText.includes('cloudflare'))
+    ) {
+      console.warn(`  🤖 Cloudflare/Bot challenge detected via page text`);
+      return true;
+    }
+  } catch (_) {
+    // ignore
   }
 
   return false;
@@ -214,50 +315,108 @@ async function waitForNavOrTimeout(page, timeout = 5000) {
  */
 async function safeClick(page, selector, timeout = 3000) {
   try {
+    await dismissCookieBanners(page);
     await page.click(selector, { timeout });
     return true;
   } catch (_) {
-    return false;
+    try {
+      await page.click(selector, { timeout: 1000, force: true });
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 }
 
 /**
  * handleLoginIfPrompted — detects and auto-fills login forms if a portal presents a login gate.
+ * Supports both single-step and two-step login flows across all portals.
+ * Uses provided creds or defaults to shashwatyadav101@gmail.com / 9380743710@Aa.
+ *
  * @param {import('playwright').Page} page
- * @param {{ email: string, password: string }} creds
+ * @param {{ email?: string, password?: string }} [creds]
  * @returns {Promise<boolean>}
  */
 async function handleLoginIfPrompted(page, creds) {
+  const fallback = { email: 'shashwatyadav101@gmail.com', password: '9380743710@Aa' };
+  const c = {
+    email: (creds?.email && creds.email.trim()) || fallback.email,
+    password: (creds?.password && creds.password.trim()) || fallback.password,
+  };
 
-  if (!creds?.email || !creds?.password) return false;
   try {
+    const url = (page.url() || '').toLowerCase();
+    const isAuthUrl = url.includes('/login') || url.includes('/signin') || url.includes('/auth') || url.includes('/uas/') || url.includes('/session') || url.includes('/nlogin');
+
     const emailInput = await page.$(
-      'input[type="email"], input[id*="username"], input[id*="email"], input[name*="email"], input[name*="user"], input[placeholder*="email" i]'
+      'input[type="email"], input[id*="username"], input[id*="email"], input[name*="email"], input[name*="username"], input[name="session_key"], input[placeholder*="email" i], input[placeholder*="username" i]'
     );
     const passInput = await page.$(
-      'input[type="password"], input[id*="password"], input[name*="password"], input[placeholder*="password" i]'
+      'input[type="password"], input[id*="password"], input[name*="password"], input[name="session_password"], input[placeholder*="password" i]'
     );
 
-    if (emailInput && passInput) {
-      console.log('  🔐 Login gate detected — filling portal credentials...');
-      await emailInput.click({ clickCount: 3 });
-      await emailInput.fill(creds.email);
-      await humanDelay(400, 800);
-      await passInput.click({ clickCount: 3 });
-      await passInput.fill(creds.password);
-      await humanDelay(400, 800);
-
-      const submitBtn = await page.$(
-        'button[type="submit"], input[type="submit"], button:has-text("Sign in"), button:has-text("Log in"), button:has-text("Login"), button:has-text("Continue")'
-      );
-      if (submitBtn) {
-        await submitBtn.click();
-        await humanDelay(2000, 3000);
-      }
-      return true;
+    if (!emailInput && !passInput && !isAuthUrl) {
+      return false;
     }
-  } catch (_) {}
-  return false;
+
+    console.log(`  🔐 Login gate detected — filling credentials for ${c.email}…`);
+
+    // Step 1: Fill email if present
+    if (emailInput) {
+      const isVis = await emailInput.isVisible().catch(() => false);
+      if (isVis) {
+        await emailInput.click({ clickCount: 3 });
+        await emailInput.fill(c.email);
+        await humanDelay(400, 800);
+      }
+    }
+
+    // Step 2: Handle password if visible, or click Continue for 2-step auth
+    let activePass = passInput;
+    if (!activePass || !(await activePass.isVisible().catch(() => false))) {
+      const step1Btn = await page.$(
+        'button:has-text("Continue"), button:has-text("Next"), button[type="submit"], input[type="submit"]'
+      );
+      if (step1Btn && emailInput) {
+        await step1Btn.click();
+        await humanDelay(1500, 2500);
+        activePass = await page.$(
+          'input[type="password"], input[id*="password"], input[name*="password"], input[placeholder*="password" i]'
+        );
+      }
+    }
+
+    if (activePass) {
+      const isVis = await activePass.isVisible().catch(() => false);
+      if (isVis) {
+        await activePass.click({ clickCount: 3 });
+        await activePass.fill(c.password);
+        await humanDelay(500, 900);
+      }
+    }
+
+    // Step 3: Click final submit / sign in button
+    const submitBtn = await page.$(
+      'button[type="submit"], input[type="submit"], button:has-text("Sign in"), button:has-text("Log in"), button:has-text("Login"), button:has-text("Submit"), button:has-text("Continue")'
+    );
+    if (submitBtn) {
+      const isVis = await submitBtn.isVisible().catch(() => false);
+      if (isVis) {
+        await submitBtn.click();
+        await humanDelay(2500, 4500);
+      }
+    }
+
+    if (await detectCaptcha(page)) {
+      console.warn('  🤖 Verification challenge / 2FA prompt detected on login.');
+      console.warn('  👉 Please complete verification challenge in the browser window if prompted...');
+      await humanDelay(4000, 6000);
+    }
+
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 /**
@@ -346,6 +505,7 @@ async function fillFieldWithAI(page, selectors, profile, jobContext = {}, fieldH
 module.exports = {
   fillField,
   fillFieldWithAI,
+  dismissCookieBanners,
   handleLoginIfPrompted,
   uploadResume,
   humanDelay,

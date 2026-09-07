@@ -97,8 +97,14 @@ async function sendInterviewEmail(jobTitle, company, jobUrl) {
 const app  = express();
 const PORT = 3001;
 
-app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
+app.use(cors({ origin: ['http://localhost:5173', 'http://localhost:3001'], credentials: true }));
 app.use(express.json({ limit: '2mb' }));
+
+// Serve compiled dashboard statically so http://localhost:3001 gives the full Web UI
+const DIST_PATH = path.join(__dirname, '../dashboard/dist');
+if (fs.existsSync(DIST_PATH)) {
+  app.use(express.static(DIST_PATH));
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Bot process state
@@ -250,6 +256,15 @@ app.post('/api/bot/start', (req, res) => {
         botStatus = 'paused';
         broadcast('status', { status: 'paused' });
       }
+      // Detect batch collection ready event
+      if (line.includes('[BATCH COLLECTED]') || line.includes('Review queue updated:')) {
+        try {
+          const queueData = fs.existsSync(REVIEW_QUEUE_PATH)
+            ? JSON.parse(fs.readFileSync(REVIEW_QUEUE_PATH, 'utf8') || '[]')
+            : [];
+          broadcast('batch_collected', { count: queueData.length, jobs: queueData });
+        } catch (_) {}
+      }
       // Detect job card info from log lines
       if (line.includes('📌') || line.includes('🏢')) {
         broadcast('job', { line });
@@ -318,6 +333,111 @@ app.post('/api/bot/action', (req, res) => {
   }
 
   res.json({ ok: true });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Batch review queue endpoints
+// ──────────────────────────────────────────────────────────────────────────────
+
+const REVIEW_QUEUE_PATH = path.join(__dirname, 'session', 'review_queue.json');
+
+app.get('/api/bot/review-queue', (req, res) => {
+  try {
+    if (!fs.existsSync(REVIEW_QUEUE_PATH)) {
+      return res.json({ ok: true, count: 0, jobs: [] });
+    }
+    const data = JSON.parse(fs.readFileSync(REVIEW_QUEUE_PATH, 'utf8') || '[]');
+    res.json({ ok: true, count: data.length, jobs: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/bot/review-queue/clear', (req, res) => {
+  try {
+    if (fs.existsSync(REVIEW_QUEUE_PATH)) {
+      fs.writeFileSync(REVIEW_QUEUE_PATH, '[]', 'utf8');
+    }
+    broadcast('queue_cleared', {});
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Apply to a specific job or all jobs from review queue
+app.post('/api/bot/review-queue/apply', (req, res) => {
+  if (botProcess) {
+    return res.status(409).json({ error: 'Another bot process is currently running.' });
+  }
+
+  const { index } = req.body; // undefined means apply all
+  const scriptPath = path.join(__dirname, 'applyBatch.js');
+  const args = index !== undefined ? [`--index=${index}`] : [];
+
+  botStatus = 'running';
+  broadcast('status', { status: 'running' });
+  broadcast('log', { line: `🚀 Launching automated application for ${index !== undefined ? `job #${Number(index) + 1}` : 'all queued jobs'}…` });
+
+  botProcess = spawn('node', [scriptPath, ...args], {
+    cwd: path.join(__dirname, '..'),
+    env: { ...process.env },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  botProcess.stdout.on('data', (chunk) => {
+    const lines = chunk.toString().split('\n').filter(Boolean);
+    lines.forEach(line => {
+      console.log('[BATCH APPLY]', line);
+      broadcast('log', { line });
+    });
+  });
+
+  botProcess.stderr.on('data', (chunk) => {
+    const lines = chunk.toString().split('\n').filter(Boolean);
+    lines.forEach(line => {
+      broadcast('log', { line: `[ERR] ${line}` });
+    });
+  });
+
+  botProcess.on('close', (code) => {
+    botStatus = code === 0 ? 'done' : 'error';
+    botProcess = null;
+    broadcast('status', { status: botStatus, code });
+    // Refresh queue after run
+    try {
+      const remaining = fs.existsSync(REVIEW_QUEUE_PATH) ? JSON.parse(fs.readFileSync(REVIEW_QUEUE_PATH, 'utf8') || '[]') : [];
+      broadcast('batch_collected', { count: remaining.length, jobs: remaining });
+    } catch (_) {}
+  });
+
+  botProcess.on('error', (err) => {
+    botStatus = 'error';
+    botProcess = null;
+    broadcast('status', { status: 'error', message: err.message });
+  });
+
+  res.json({ ok: true, message: 'Automated application started' });
+});
+
+// Skip/remove a specific job from review queue
+app.post('/api/bot/review-queue/skip', (req, res) => {
+  try {
+    const { index } = req.body;
+    if (fs.existsSync(REVIEW_QUEUE_PATH)) {
+      const data = JSON.parse(fs.readFileSync(REVIEW_QUEUE_PATH, 'utf8') || '[]');
+      if (typeof index === 'number' && data[index]) {
+        const skippedJob = data.splice(index, 1)[0];
+        fs.writeFileSync(REVIEW_QUEUE_PATH, JSON.stringify(data, null, 2), 'utf8');
+        tracker.insertApplication({ ...skippedJob, job_title: skippedJob.title, job_url: skippedJob.jobUrl, status: 'skipped', notes: 'Skipped by user from review queue' });
+        broadcast('batch_collected', { count: data.length, jobs: data });
+        return res.json({ ok: true, remaining: data.length });
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -633,6 +753,14 @@ app.delete('/api/output/jd-cache', (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// SPA fallback route: redirect client routes to index.html
+if (fs.existsSync(path.join(DIST_PATH, 'index.html'))) {
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    res.sendFile(path.join(DIST_PATH, 'index.html'));
+  });
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Start server

@@ -12,7 +12,12 @@ const path    = require('path');
 
 const BASE_URL    = 'https://www.naukri.com';
 const SESSION_DIR = path.join(__dirname, '..', 'session');
-const COOKIES_PATH= path.join(SESSION_DIR, 'naukri_cookies.json');
+function getCookiesPath() {
+  const primary = path.join(SESSION_DIR, 'naukri.json');
+  const legacy = path.join(SESSION_DIR, 'naukri_cookies.json');
+  return fs.existsSync(primary) ? primary : (fs.existsSync(legacy) ? legacy : primary);
+}
+const COOKIES_PATH = getCookiesPath();
 
 // ── login() ──────────────────────────────────────────────────────────────────
 
@@ -145,38 +150,41 @@ async function search(page, profile) {
     const skipKw = (searchCfg.skipKeywords || []).map(k => k.toLowerCase());
     const maxPer = searchCfg.maxPerRun || 20;
 
-    const extracted = await page.evaluate((max, skip) => {
+    const extracted = await page.evaluate(({ max, skip }) => {
       const cards = document.querySelectorAll('.jobTuple, .srp-jobtuple-wrapper, [class*="jobTupleHeader"]');
       const results = [];
 
       cards.forEach(card => {
         if (results.length >= max) return;
         try {
-          const titleEl   = card.querySelector('.title, h2 a, [class*="jobTitle"]');
-          const companyEl = card.querySelector('.companyInfo a, [class*="companyName"]');
-          const locEl     = card.querySelector('.location li, [class*="location"]');
-          const salaryEl  = card.querySelector('.salary, [class*="salary"]');
-          const linkEl    = card.querySelector('a[href*="job-listings"]') || titleEl;
+          const titleEl   = card.querySelector('a.title, .title, [class*="jobTitle"], h2 a');
+          const companyEl = card.querySelector('a.comp-name, .comp-name, [class*="comp-name"], a[class*="company"], .subTitle, a.subTitle, [title*="Career"]');
+          const locEl     = card.querySelector('span.loc-wrap, .loc-wrap, .location, [class*="location"]');
+          const salaryEl  = card.querySelector('span.sal-wrap, .sal-wrap, .salary, [class*="salary"]');
+          const linkEl    = card.querySelector('a.title, a[href*="job-listings"], a[href*="/job-"]') || titleEl;
 
           if (!titleEl) return;
 
           const title   = titleEl.innerText.trim();
-          const company = companyEl?.innerText.trim() || 'Unknown';
+          const company = companyEl?.innerText.trim() || 'Company';
           const combined = `${title} ${company}`.toLowerCase();
-          if (skip.some(kw => combined.includes(kw))) return;
+          if (skip && skip.some(kw => combined.includes(kw))) return;
+
+          const jobHref = (linkEl && linkEl.href) ? linkEl.href : (titleEl && titleEl.href ? titleEl.href : '');
+          if (!jobHref || jobHref === window.location.href) return;
 
           results.push({
             title,
             company,
             location: locEl?.innerText.trim() || '',
-            jobUrl:   linkEl?.href || window.location.href,
+            jobUrl:   jobHref,
             salary:   salaryEl?.innerText.trim() || '',
             platform: 'naukri',
           });
         } catch (_) {}
       });
       return results;
-    }, maxPer, skipKw);
+    }, { max: maxPer, skip: skipKw });
 
     console.log(`  ✅ Found ${extracted.length} jobs`);
     jobs.push(...extracted);
@@ -199,6 +207,7 @@ async function apply(page, job, profile) {
   const { professional } = profile;
 
   try {
+    if (!page || page.isClosed()) return 'error';
     console.log(`\n📋 Opening: ${job.title} @ ${job.company}`);
     await page.goto(job.jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await humanDelay(2000, 3000);
@@ -231,33 +240,52 @@ async function apply(page, job, profile) {
       return 'skipped';
     }
 
-    // Submit → click Apply
-    await applyBtn.click();
+    if (!page || page.isClosed()) {
+      console.warn('  ⚠️ Page was closed during review pause.');
+      return 'skipped';
+    }
+
+    // Re-query fresh apply button in case DOM shifted during review pause
+    const freshBtn = await page.$(
+      '#apply-button, .apply-button, button:has-text("Apply"), [class*="applyBtn"], .ia-apply-button'
+    );
+    if (!freshBtn) {
+      console.warn('  ⚠️ Apply button no longer found after review pause.');
+      return 'skipped';
+    }
+
+    // Submit → click Apply (handle potential new tab)
+    const popupPromise = page.context().waitForEvent('page', { timeout: 3000 }).catch(() => null);
+    await freshBtn.click().catch(() => {});
+    const popup = await popupPromise;
+    const targetScope = (popup && !popup.isClosed()) ? popup : page;
+
     await humanDelay(2000, 4000);
 
     // Handle post-click modal (cover letter, etc.)
-    const coverTextarea = await page.$('textarea[name*="cover"], #coverLetter, textarea[placeholder*="cover"]');
+    const coverTextarea = await targetScope.$('textarea[name*="cover"], #coverLetter, textarea[placeholder*="cover"]').catch(() => null);
     if (coverTextarea && professional.summary) {
-      await coverTextarea.fill(professional.summary);
+      await coverTextarea.fill(professional.summary).catch(() => {});
       await humanDelay(500, 1000);
     }
 
-    const modalSubmit = await page.$('button:has-text("Apply"), button:has-text("Submit"), #submit-apply');
+    const modalSubmit = await targetScope.$('button:has-text("Apply"), button:has-text("Submit"), #submit-apply').catch(() => null);
     if (modalSubmit) {
-      await modalSubmit.click();
+      await modalSubmit.click().catch(() => {});
       await humanDelay(2000, 3000);
     }
 
     // Confirm success
-    const successIndicator = await page.$('[class*="success"], [class*="applied"], .checkmark').catch(() => null);
+    const successIndicator = await targetScope.$('[class*="success"], [class*="applied"], .checkmark').catch(() => null);
     if (successIndicator) {
       console.log(`  🎉 Applied to ${job.title} @ ${job.company}`);
+      tracker.insertApplication({ ...job, job_title: job.title, job_url: job.jobUrl, status: 'applied' });
+      return 'applied';
     } else {
-      console.log(`  ✅ Apply clicked for ${job.title} @ ${job.company} (verify manually)`);
+      console.warn(`  ⚠️ Apply unverified on Naukri (requires external site completion or questionnaire) — recording as skipped`);
+      tracker.insertApplication({ ...job, job_title: job.title, job_url: job.jobUrl, status: 'skipped', notes: 'Requires manual verification or external site completion' });
+      return 'skipped';
     }
-
-    tracker.insertApplication({ ...job, job_title: job.title, job_url: job.jobUrl, status: 'applied' });
-    return 'applied';
 
   } catch (err) {
     console.error(`  ❌ Error applying to ${job.title} @ ${job.company}:`, err.message);

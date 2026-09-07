@@ -42,7 +42,72 @@ async function restoreSession(page) {
   }
 }
 
-async function verifySession(page) {
+async function loginLinkedIn(page, profile) {
+  const creds = profile?.credentials?.linkedin || profile?.credentials?.default || {
+    email: 'shashwatyadav101@gmail.com',
+    password: '9380743710@Aa',
+  };
+
+  console.log(`  🔐 Attempting LinkedIn automatic login for: ${creds.email}`);
+  try {
+    await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 35000 });
+    await humanDelay(1500, 2500);
+
+    const userField = await page.$('input#username, input[name="session_key"], input#session_key');
+    const passField = await page.$('input#password, input[name="session_password"], input#session_password');
+
+    if (userField && passField) {
+      await userField.click({ clickCount: 3 });
+      await userField.fill(creds.email);
+      await humanDelay(400, 800);
+      await passField.click({ clickCount: 3 });
+      await passField.fill(creds.password);
+      await humanDelay(500, 900);
+
+      const submitBtn = await page.$('button[type="submit"], button:has-text("Sign in")');
+      if (submitBtn) await submitBtn.click();
+
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+      await humanDelay(3000, 5000);
+    }
+
+    // Check if security challenge or OTP was triggered
+    const currentUrl = page.url();
+    if (currentUrl.includes('/checkpoint') || currentUrl.includes('/challenge') || (await detectCaptcha(page))) {
+      console.warn('  🤖 LinkedIn security check or verification code required.');
+      console.warn('  👉 Please complete the challenge or enter the code in the browser window (waiting up to 90s)...');
+      try {
+        await page.waitForFunction(
+          () => !window.location.href.includes('/checkpoint') &&
+                !window.location.href.includes('/challenge') &&
+                !window.location.href.includes('/login') &&
+                !window.location.href.includes('/uas/'),
+          { timeout: 90000 }
+        );
+        console.log('  ✅ Challenge passed in browser window!');
+      } catch (_) {
+        console.warn('  ⚠️ Verification window timed out.');
+      }
+    }
+
+    const finalUrl = page.url();
+    const loggedIn = !finalUrl.includes('/login') && !finalUrl.includes('/uas/') && !finalUrl.includes('/authwall');
+    if (loggedIn) {
+      console.log('  ✅ LinkedIn logged in successfully!');
+      if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+      const cookies = await page.context().cookies();
+      fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
+      return true;
+    }
+
+    return false;
+  } catch (err) {
+    console.error('  ❌ LinkedIn login error:', err.message);
+    return false;
+  }
+}
+
+async function verifySession(page, profile) {
   try {
     console.log('🔍 Verifying LinkedIn session...');
     await page.goto('https://www.linkedin.com/feed', { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -50,15 +115,17 @@ async function verifySession(page) {
 
     const currentUrl = page.url();
     if (currentUrl.includes('/login') || currentUrl.includes('/checkpoint') || currentUrl.includes('/uas/') || currentUrl.includes('/authwall')) {
-      console.warn('⚠️  LinkedIn session expired or not logged in (redirected to login/authwall).');
-      console.warn('👉 Please run "Harvest Sessions" in Settings or log in manually in browser.');
-      return false;
+      console.warn('⚠️  LinkedIn session expired or redirected to login/authwall.');
+      console.log('🔄 Falling back to automatic email & password login…');
+      return await loginLinkedIn(page, profile);
     }
     console.log('✅ LinkedIn session verified (/feed active)');
     return true;
   } catch (err) {
     console.warn('⚠️  LinkedIn session verification check failed:', err.message);
-    if (page.url().includes('/login') || page.url().includes('/authwall')) return false;
+    if (page.url().includes('/login') || page.url().includes('/authwall')) {
+      return await loginLinkedIn(page, profile);
+    }
     return true;
   }
 }
@@ -110,7 +177,7 @@ async function search(page, profile) {
   const jobs = [];
   await restoreSession(page);
 
-  const sessionOk = await verifySession(page);
+  const sessionOk = await verifySession(page, profile);
   if (!sessionOk) {
     console.warn('⚠️  Skipping LinkedIn for this run: unauthenticated session.');
     return [];
@@ -219,6 +286,11 @@ async function apply(page, job, profile) {
     await page.goto(job.jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await humanDelay(2000, 3500);
     await handleGoogleLoginIfNeeded(page);
+    if (page.url().includes('/login') || page.url().includes('/authwall') || page.url().includes('/uas/')) {
+      await loginLinkedIn(page, profile);
+      await page.goto(job.jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await humanDelay(1500, 2500);
+    }
 
     if (await detectCaptcha(page)) {
       console.warn('  🤖 CAPTCHA — skipping');

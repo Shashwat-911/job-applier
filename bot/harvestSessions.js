@@ -46,6 +46,17 @@ const PLATFORMS = [
   { name: 'workatastartup', domain: '.workatastartup.com', url: 'https://www.workatastartup.com' },
 ];
 
+function filterEphemeralCookies(cookies) {
+  if (!Array.isArray(cookies)) return [];
+  return cookies.filter(c => {
+    const name = (c.name || '').toLowerCase();
+    if (name.startsWith('__cf') || name.startsWith('cf_') || name.includes('cfuvid') || name.includes('_cf_')) {
+      return false;
+    }
+    return true;
+  });
+}
+
 async function harvestSessions() {
   const sessionDir = path.join(__dirname, 'session');
   fs.mkdirSync(sessionDir, { recursive: true });
@@ -57,6 +68,7 @@ async function harvestSessions() {
   const context = await chromium.launchPersistentContext(getBravePath(), {
     headless: false,
     executablePath: getBraveExecutable(),
+    ignoreDefaultArgs: ['--enable-automation'],
     args: ['--no-first-run', '--no-default-browser-check'],
   });
 
@@ -81,15 +93,17 @@ async function harvestSessions() {
         c.domain === platform.domain
       );
 
-      if (platformCookies.length === 0) {
+      const cleanCookies = filterEphemeralCookies(platformCookies);
+
+      if (cleanCookies.length === 0) {
         console.log(`  ⚠️  No cookies found for ${platform.name} — might not be logged in`);
         failed++;
         continue;
       }
 
       const sessionPath = path.join(sessionDir, `${platform.name}.json`);
-      fs.writeFileSync(sessionPath, JSON.stringify(platformCookies, null, 2));
-      console.log(`  ✅ Saved ${platformCookies.length} cookies → session/${platform.name}.json`);
+      fs.writeFileSync(sessionPath, JSON.stringify(cleanCookies, null, 2));
+      console.log(`  ✅ Saved ${cleanCookies.length} cookies → session/${platform.name}.json`);
       saved++;
 
     } catch (err) {

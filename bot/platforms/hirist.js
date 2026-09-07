@@ -4,15 +4,35 @@
  * Exports: search(page, profile), apply(page, job, profile)
  */
 
-const { fillField, uploadResume, humanDelay, detectCaptcha, safeClick } = require('../helpers/formFiller');
+const fs = require('fs');
+const path = require('path');
+const { fillField, uploadResume, humanDelay, detectCaptcha, safeClick, handleLoginIfPrompted } = require('../helpers/formFiller');
 const { reviewPause } = require('../helpers/reviewPause');
 const tracker = require('../../db/tracker');
 
 const BASE_URL = 'https://www.hirist.tech';
+const SESSION_DIR = path.join(__dirname, '..', 'session');
+const SESSION_PATH = path.join(SESSION_DIR, 'hirist.json');
+
+async function restoreSession(page) {
+  if (fs.existsSync(SESSION_PATH)) {
+    try {
+      const cookies = JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'));
+      await page.context().addCookies(cookies);
+    } catch (_) {}
+  }
+}
+
+async function saveSession(context) {
+  if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+  const cookies = await context.cookies();
+  fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
+}
 
 async function search(page, profile) {
   const { search: searchCfg } = profile;
   const jobs = [];
+  await restoreSession(page);
 
   for (const role of searchCfg.roles) {
     const slug = role.toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -24,6 +44,7 @@ async function search(page, profile) {
     try {
       await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       await humanDelay(2000, 3500);
+      await handleLoginIfPrompted(page, profile?.credentials?.hirist || profile?.credentials?.default);
 
       if (await detectCaptcha(page)) {
         console.warn('  🤖 CAPTCHA on Hirist — skipping');
@@ -77,9 +98,11 @@ async function search(page, profile) {
 
 async function apply(page, job, profile) {
   try {
+    await restoreSession(page);
     console.log(`\n📋 Opening: ${job.title} @ ${job.company}`);
     await page.goto(job.jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await humanDelay(2000, 3500);
+    await handleLoginIfPrompted(page, profile?.credentials?.hirist || profile?.credentials?.default);
 
     if (await detectCaptcha(page)) return 'skipped';
 
@@ -121,4 +144,4 @@ async function apply(page, job, profile) {
   }
 }
 
-module.exports = { search, apply };
+module.exports = { search, apply, saveSession, loadSession: restoreSession };

@@ -39,6 +39,12 @@ export const api = {
   stopBot:    ()       => request('POST', '/bot/stop'),
   botAction:  (action) => request('POST', '/bot/action', { action }),
 
+  // Review Queue
+  getReviewQueue:   ()          => request('GET',  '/bot/review-queue'),
+  clearReviewQueue: ()          => request('POST', '/bot/review-queue/clear'),
+  applyQueueJob:    (index)     => request('POST', '/bot/review-queue/apply', { index }),
+  skipQueueJob:     (index)     => request('POST', '/bot/review-queue/skip', { index }),
+
   // Sessions
   getSessionsStatus: () => request('GET', '/sessions/status'),
   harvestSessions:   () => request('POST', '/sessions/harvest'),

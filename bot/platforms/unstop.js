@@ -65,23 +65,30 @@ async function search(page, profile) {
       }
 
       const extracted = await page.evaluate((maxPer) => {
-        const cards = document.querySelectorAll('.single_opportunity, [class*="opportunity_card"]');
+        const links = document.querySelectorAll('a[href*="/jobs/"], .single_opportunity, [class*="opportunity_card"]');
         const results = [];
-        cards.forEach(card => {
+        const seen = new Set();
+        links.forEach(card => {
           if (results.length >= maxPer) return;
           try {
-            const titleEl = card.querySelector('h3, .title, a[class*="title"]');
-            const compEl = card.querySelector('.organisation, .company_name');
+            const titleEl = card.querySelector('h3, h4, .title, a[class*="title"]') || (card.tagName === 'A' ? card : null);
+            const compEl = card.querySelector('.organisation, .company_name, [class*="company"], [class*="org"]');
             const locEl = card.querySelector('.location, [class*="location"]');
-            const linkEl = card.querySelector('a[href*="/jobs/"], a[href*="/competitions/"]');
+            let jobUrl = card.tagName === 'A' ? card.href : (card.querySelector('a[href*="/jobs/"]')?.href || '');
 
-            if (!titleEl || !linkEl) return;
+            if (!titleEl || !jobUrl) return;
+
+            let title = titleEl.querySelector('h3, h4')?.innerText || titleEl.innerText;
+            title = title.split('\n')[0].trim();
+            const cleanUrl = jobUrl.split('?')[0];
+            if (!cleanUrl || seen.has(cleanUrl)) return;
+            seen.add(cleanUrl);
 
             results.push({
-              title: titleEl.innerText.trim(),
+              title,
               company: compEl ? compEl.innerText.trim() : 'Company',
               location: locEl ? locEl.innerText.trim() : 'India / Remote',
-              jobUrl: linkEl.href ? linkEl.href.split('?')[0] : '',
+              jobUrl: cleanUrl,
               salary: '',
               platform: 'unstop',
             });
@@ -121,9 +128,44 @@ async function apply(page, job, profile) {
     await handleLoginIfPrompted(page, profile?.credentials?.unstop || profile?.credentials?.default);
     await handleGoogleLoginIfNeeded(page);
 
-    const regBtn = await page.$('button:has-text("Register"), button:has-text("Apply Now"), a:has-text("Apply")');
+    // Wait for dynamic Angular hydration on Unstop
+    const applySelectors = [
+      '#un-register-btn',
+      '[id*="register-btn"]',
+      'div.register_btn',
+      '[aria-label*="Quick Apply" i]',
+      '[aria-label*="Apply" i]',
+      '[aria-label*="Register" i]',
+      'div:has-text("Quick Apply")',
+      'button:has-text("Quick Apply")',
+      'button:has-text("Apply Now")',
+      'button:has-text("Apply")',
+      'button:has-text("Register")',
+      'a:has-text("Apply Now")',
+      'a:has-text("Apply")',
+      'a:has-text("Register")',
+      '[class*="apply_btn"]',
+      '[class*="applyBtn"]',
+      '.wave_btn',
+    ];
+
+    let regBtn = null;
+    // Wait briefly for hydration
+    await page.waitForSelector('#un-register-btn, [id*="register-btn"], div.register_btn, button:has-text("Apply")', { timeout: 8000 }).catch(() => null);
+
+    for (const sel of applySelectors) {
+      const elements = await page.$$(sel);
+      for (const el of elements) {
+        if (await el.isVisible().catch(() => false)) {
+          regBtn = el;
+          break;
+        }
+      }
+      if (regBtn) break;
+    }
+
     if (!regBtn) {
-      console.warn('  ⚠️ No register/apply button found on Unstop');
+      console.warn('  ⚠️ No visible register/apply button found on Unstop');
       return 'skipped';
     }
 
@@ -134,22 +176,55 @@ async function apply(page, job, profile) {
     });
 
     if (action === 'submit') {
-      await regBtn.click();
+      await regBtn.scrollIntoViewIfNeeded().catch(() => {});
+      await regBtn.click({ timeout: 4000, force: true }).catch(async () => {
+        await regBtn.evaluate(b => b.click()).catch(() => {});
+      });
       await humanDelay(2000, 3000);
       await handleGoogleLoginIfNeeded(page);
 
+      // Check if registration modal or confirm button appears
+      const modalSubmit = await page.$('.modal button:has-text("Submit"), button:has-text("Confirm & Submit"), button:has-text("Register"), button:has-text("Next")');
+      if (modalSubmit && (await modalSubmit.isVisible().catch(() => false))) {
+        await modalSubmit.click({ timeout: 4000, force: true }).catch(async () => {
+          await modalSubmit.evaluate(b => b.click()).catch(() => {});
+        });
+        await humanDelay(2000, 3000);
+      }
 
-      tracker.insertApplication({
-        job_title: job.title,
-        company: job.company,
-        platform: 'unstop',
-        job_url: job.jobUrl,
-        status: 'applied',
-        notes: 'Registered on Unstop',
-        salary_range: job.salary,
-        location: job.location,
-      });
-      return 'applied';
+      // Check confirmation
+      const isConfirmed = await page.waitForSelector(
+        'text="Registered successfully", text="Application submitted", text="Already Registered", [class*="registered"], [class*="success"]',
+        { timeout: 5000 }
+      ).catch(() => null);
+
+      if (isConfirmed) {
+        console.log(`  🎉 Confirmed: Registered on Unstop for ${job.title} @ ${job.company}`);
+        tracker.insertApplication({
+          job_title: job.title,
+          company: job.company,
+          platform: 'unstop',
+          job_url: job.jobUrl,
+          status: 'applied',
+          notes: 'Confirmed on Unstop',
+          salary_range: job.salary,
+          location: job.location,
+        });
+        return 'applied';
+      } else {
+        console.warn(`  ⚠️ Unstop submission confirmation unverified for ${job.title} @ ${job.company}`);
+        tracker.insertApplication({
+          job_title: job.title,
+          company: job.company,
+          platform: 'unstop',
+          job_url: job.jobUrl,
+          status: 'skipped',
+          notes: 'Submission confirmation unverified',
+          salary_range: job.salary,
+          location: job.location,
+        });
+        return 'skipped';
+      }
     } else if (action === 'skip') {
       return 'skipped';
     } else {

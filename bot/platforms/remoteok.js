@@ -92,32 +92,19 @@ async function apply(page, job, profile) {
       return 'skipped';
     }
 
-    const action = await reviewPause(page, {
-      jobTitle: job.title,
+    const extHref = await applyBtn.getAttribute('href').catch(() => null);
+    console.warn(`  🌐 RemoteOK job links externally to company career site: ${extHref || 'external'}`);
+    tracker.insertApplication({
+      job_title: job.title,
       company: job.company,
       platform: 'remoteok',
+      job_url: (extHref && extHref.startsWith('http')) ? extHref : job.jobUrl,
+      status: 'skipped',
+      notes: 'External redirect — company career portal application required',
+      salary_range: job.salary,
+      location: job.location,
     });
-
-    if (action === 'submit') {
-      await applyBtn.click();
-      await humanDelay(2000, 3000);
-
-      tracker.insertApplication({
-        job_title: job.title,
-        company: job.company,
-        platform: 'remoteok',
-        job_url: job.jobUrl,
-        status: 'applied',
-        notes: 'Applied via RemoteOK',
-        salary_range: job.salary,
-        location: job.location,
-      });
-      return 'applied';
-    } else if (action === 'skip') {
-      return 'skipped';
-    } else {
-      return 'quit';
-    }
+    return 'skipped';
   } catch (err) {
     console.error(`  ❌ RemoteOK apply error:`, err.message);
     return 'error';
