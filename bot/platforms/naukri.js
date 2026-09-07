@@ -186,8 +186,9 @@ async function search(page, profile) {
       return results;
     }, { max: maxPer, skip: skipKw });
 
-    console.log(`  ✅ Found ${extracted.length} jobs`);
-    jobs.push(...extracted);
+    const freshJobs = extracted.filter(j => !tracker.isJobAlreadyProcessed(j.jobUrl, j.company, j.title));
+    console.log(`  ✅ Found ${freshJobs.length} new jobs (${extracted.length - freshJobs.length} already tracked)`);
+    jobs.push(...freshJobs);
     await humanDelay(1500, 3000);
   }
 

@@ -201,8 +201,9 @@ async function search(page, profile) {
       return results;
     }, { max: remainingSlots, skip: skipKw, domainUrl: baseUrl });
 
-    console.log(`  ✅ Found ${extracted.length} Easily Apply job(s) for "${role}"`);
-    jobs.push(...extracted);
+    const freshJobs = extracted.filter(j => !tracker.isJobAlreadyProcessed(j.jobUrl, j.company, j.title));
+    console.log(`  ✅ Found ${freshJobs.length} new Easily Apply job(s) for "${role}" (${extracted.length - freshJobs.length} already tracked)`);
+    jobs.push(...freshJobs);
 
     if (jobs.length >= maxPer) {
       console.log(`  🎯 Reached target limit of ${maxPer} jobs. Finished search.`);

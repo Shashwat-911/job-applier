@@ -85,10 +85,14 @@ async function search(page, profile) {
       const skipKw = (searchCfg.skipKeywords || []).map(k => k.toLowerCase());
       const filtered = extracted.filter(j => {
         const combined = `${j.title} ${j.company}`.toLowerCase();
-        return !skipKw.some(kw => combined.includes(kw));
+        if (skipKw.some(kw => combined.includes(kw))) return false;
+        if (tracker.isJobAlreadyProcessed && tracker.isJobAlreadyProcessed(j.jobUrl, j.company, j.title)) {
+          return false;
+        }
+        return true;
       });
 
-      console.log(`  ✅ Found ${filtered.length} Internshala jobs`);
+      console.log(`  ✅ Found ${filtered.length} new Internshala jobs (${extracted.length - filtered.length} already processed)`);
       jobs.push(...filtered);
     } catch (err) {
       console.warn(`  ⚠️ Internshala search error:`, err.message);

@@ -176,6 +176,19 @@ async function main() {
 
   for (let i = 0; i < targetJobs.length; i++) {
     const job = targetJobs[i];
+
+    // Check if already applied previously
+    if (tracker.isJobAlreadyApplied(job.jobUrl, job.company, job.title)) {
+      log(`⏭️ Already successfully applied in database: ${job.title} @ ${job.company} — skipping redundant submission.`);
+      appliedCount++;
+      try {
+        const currentQ = JSON.parse(fs.readFileSync(queuePath, 'utf8') || '[]');
+        const updatedQ = currentQ.filter(j => j.jobUrl !== job.jobUrl && `${j.title}-${j.company}` !== `${job.title}-${job.company}`);
+        fs.writeFileSync(queuePath, JSON.stringify(updatedQ, null, 2), 'utf8');
+      } catch (_) {}
+      continue;
+    }
+
     log(`\n-------------------------------------------------------`);
     log(`[${i + 1}/${targetJobs.length}] Applying to: ${job.title} @ ${job.company}`);
     log(`Platform: ${job.platform.toUpperCase()} | URL: ${job.jobUrl || 'N/A'}`);

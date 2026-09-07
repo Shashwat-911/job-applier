@@ -145,21 +145,172 @@ const stmts = {
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Normalization & Deduplication Helpers
+// ──────────────────────────────────────────────────────────────────────────────
+
+function normalizeJobString(str) {
+  return (str || '')
+    .replace(/Actively\s*hiring/gi, '')
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Find an existing application by URL or by company + job title.
+ */
+function findExistingApplication(jobUrl, company, jobTitle) {
+  if (jobUrl && typeof jobUrl === 'string' && jobUrl.trim().length > 10) {
+    const cleanUrl = jobUrl.split('?')[0].trim();
+    const row = db.prepare(`SELECT * FROM applications WHERE job_url = ? OR job_url LIKE ? LIMIT 1`).get(jobUrl, `${cleanUrl}%`);
+    if (row) return row;
+  }
+
+  const normComp = normalizeJobString(company);
+  const normTitle = normalizeJobString(jobTitle);
+  if (!normComp || !normTitle) return null;
+
+  const all = db.prepare(`SELECT * FROM applications`).all();
+  for (const row of all) {
+    const rComp = normalizeJobString(row.company);
+    const rTitle = normalizeJobString(row.job_title);
+    if (rComp === normComp && (rTitle === normTitle || rTitle.includes(normTitle) || normTitle.includes(rTitle))) {
+      return row;
+    }
+  }
+  return null;
+}
+
+function isJobAlreadyProcessed(jobUrl, company, jobTitle) {
+  return findExistingApplication(jobUrl, company, jobTitle) !== null;
+}
+
+function isJobAlreadyApplied(jobUrl, company, jobTitle) {
+  const existing = findExistingApplication(jobUrl, company, jobTitle);
+  return existing !== null && existing.status === 'applied';
+}
+
+/**
+ * Deduplicate database rows, preserving 'applied' status over 'skipped'
+ * and cleaning company badges.
+ */
+function deduplicateDatabase() {
+  const all = db.prepare(`SELECT * FROM applications ORDER BY applied_at DESC`).all();
+  if (!all || all.length === 0) return { removed: 0, remaining: 0 };
+
+  const groups = new Map();
+  for (const row of all) {
+    const cleanCompany = (row.company || '').replace(/Actively\s*hiring/gi, '').replace(/\s+/g, ' ').trim();
+    const normComp = normalizeJobString(cleanCompany);
+    const normTitle = normalizeJobString(row.job_title);
+    const key = `${normComp}:::${normTitle}`;
+
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+    groups.get(key).push(row);
+  }
+
+  let removedCount = 0;
+  const deleteStmt = db.prepare(`DELETE FROM applications WHERE id = ?`);
+  const updateStmt = db.prepare(`UPDATE applications SET company = @company, status = @status, notes = @notes WHERE id = @id`);
+
+  for (const [key, rows] of groups.entries()) {
+    if (rows.length === 1) {
+      const cleanCompany = (rows[0].company || '').replace(/Actively\s*hiring/gi, '').replace(/\s+/g, ' ').trim();
+      if (cleanCompany !== rows[0].company) {
+        updateStmt.run({ id: rows[0].id, company: cleanCompany, status: rows[0].status, notes: rows[0].notes });
+      }
+      continue;
+    }
+
+    // Multiple rows found: prefer applied row
+    const appliedRows = rows.filter(r => r.status === 'applied');
+    const canonical = appliedRows.length > 0 ? appliedRows[0] : rows[0];
+    const cleanCompany = (canonical.company || '').replace(/Actively\s*hiring/gi, '').replace(/\s+/g, ' ').trim();
+
+    updateStmt.run({
+      id: canonical.id,
+      company: cleanCompany,
+      status: appliedRows.length > 0 ? 'applied' : canonical.status,
+      notes: appliedRows.length > 0 ? (appliedRows[0].notes || canonical.notes) : canonical.notes,
+    });
+
+    for (const row of rows) {
+      if (row.id !== canonical.id) {
+        deleteStmt.run(row.id);
+        removedCount++;
+      }
+    }
+  }
+
+  return { removed: removedCount, remaining: groups.size };
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Public API
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
- * Insert a new application record.
+ * Insert or update an application record with built-in deduplication.
+ * If the record exists, it updates without creating duplicates, and
+ * NEVER downgrades 'applied' status to 'skipped'.
  * @param {Object} data - { job_title, company, platform, job_url, status, notes, salary_range, location, match_score, missing_skills, tailored_resume, cover_letter, ai_answer_log }
- * @returns {Object} - The newly inserted row (with id)
+ * @returns {Object} - The application row (with id)
  */
 function insertApplication(data) {
+  const rawTitle  = data.job_title || data.jobTitle || 'Unknown';
+  const rawComp   = data.company || 'Unknown';
+  const cleanComp = rawComp.replace(/Actively\s*hiring/gi, '').replace(/\s+/g, ' ').trim();
+  const jobUrl    = data.job_url || data.jobUrl || null;
+  const status    = data.status || 'applied';
+
+  // Check if this job has already been tracked
+  const existing = findExistingApplication(jobUrl, cleanComp, rawTitle);
+  if (existing) {
+    let finalStatus = status;
+    if (existing.status === 'applied' && status === 'skipped') {
+      finalStatus = 'applied'; // Never downgrade applied to skipped
+    } else if (status === 'applied') {
+      finalStatus = 'applied'; // Upgrade to applied if successful
+    } else {
+      finalStatus = status || existing.status;
+    }
+
+    const finalNotes = data.notes || existing.notes;
+    const finalSalary = data.salary_range || data.salaryRange || existing.salary_range;
+    const finalLocation = data.location || existing.location;
+    const finalUrl = jobUrl || existing.job_url;
+
+    db.prepare(`
+      UPDATE applications
+      SET company = @company,
+          status = @status,
+          notes = @notes,
+          salary_range = COALESCE(@salary_range, salary_range),
+          location = COALESCE(@location, location),
+          job_url = COALESCE(@job_url, job_url)
+      WHERE id = @id
+    `).run({
+      id: existing.id,
+      company: cleanComp,
+      status: finalStatus,
+      notes: finalNotes,
+      salary_range: finalSalary,
+      location: finalLocation,
+      job_url: finalUrl,
+    });
+
+    return { ...existing, company: cleanComp, status: finalStatus, notes: finalNotes, salary_range: finalSalary, location: finalLocation, job_url: finalUrl };
+  }
+
   const payload = {
-    job_title:       data.job_title       || data.jobTitle       || 'Unknown',
-    company:         data.company         || 'Unknown',
+    job_title:       rawTitle,
+    company:         cleanComp,
     platform:        data.platform        || null,
-    job_url:         data.job_url         || data.jobUrl         || null,
-    status:          data.status          || 'applied',
+    job_url:         jobUrl,
+    status:          status,
     notes:           data.notes           || null,
     salary_range:    data.salary_range    || data.salaryRange    || null,
     location:        data.location        || null,
@@ -360,6 +511,14 @@ function getAIAnswerLogs() {
   return logs;
 }
 
+// Deduplicate and sanitize on module load
+try {
+  const dedupRes = deduplicateDatabase();
+  if (dedupRes.removed > 0) {
+    console.log(`🧹 Database cleaned up: removed ${dedupRes.removed} duplicate entries. Remaining unique applications: ${dedupRes.remaining}`);
+  }
+} catch (_) {}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // CLI usage: node db/tracker.js → initializes DB and prints stats
 // ──────────────────────────────────────────────────────────────────────────────
@@ -382,6 +541,10 @@ module.exports = {
   getStats,
   clearDatabase,
   getApplicationById,
+  findExistingApplication,
+  isJobAlreadyProcessed,
+  isJobAlreadyApplied,
+  deduplicateDatabase,
   db, // expose raw db for advanced use
 };
 

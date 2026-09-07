@@ -13,6 +13,7 @@ const os = require('os');
 const { loadProfile } = require('./config');
 const { humanDelay, detectCaptcha } = require('./helpers/formFiller');
 const { isDesiredEngineeringJob } = require('./helpers/jobFilter');
+const tracker = require('../db/tracker');
 
 const linkedin       = require('./platforms/linkedin');
 const indeed         = require('./platforms/indeed');
@@ -264,6 +265,10 @@ async function main() {
           log(`  ⏭ Filtered out: "${j.title}" @ ${j.company} [${check.reason}]`);
           continue;
         }
+        if (tracker.isJobAlreadyProcessed(j.jobUrl, j.company, j.title)) {
+          log(`  ⏭ Already tracked in DB: "${j.title}" @ ${j.company}`);
+          continue;
+        }
         jobs.push(j);
       }
 
@@ -289,12 +294,12 @@ async function main() {
           existingQueue = JSON.parse(fs.readFileSync(queuePath, 'utf8'));
         }
         const combinedQueue = [...existingQueue, ...jobs];
-        // Deduplicate by jobUrl or title+company
+        // Deduplicate by jobUrl or title+company, and ensure not already tracked in DB
         const seen = new Set();
         const deduped = [];
         for (const item of combinedQueue) {
           const key = item.jobUrl || `${item.title}-${item.company}`;
-          if (!seen.has(key)) {
+          if (!seen.has(key) && !tracker.isJobAlreadyProcessed(item.jobUrl, item.company, item.title)) {
             seen.add(key);
             deduped.push(item);
           }
@@ -351,6 +356,11 @@ async function main() {
       }
 
       const job = jobs[i];
+      if (tracker.isJobAlreadyApplied(job.jobUrl, job.company, job.title)) {
+        log(`  ⏭ Already applied in DB: ${job.title} @ ${job.company}`);
+        totalApplied++;
+        continue;
+      }
       log(`\n  [${i + 1}/${jobs.length}] ${job.title} @ ${job.company}`);
 
       let result;
