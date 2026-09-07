@@ -136,10 +136,10 @@ async function apply(page, job, profile) {
     await restoreSession(page);
     await page.goto(job.jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await humanDelay(2000, 3500);
-    await handleGoogleLoginIfNeeded(page);
 
     if (await detectCaptcha(page)) return 'skipped';
 
+    // Attempt automated credential login first
     await handleLoginIfPrompted(page, profile?.credentials?.foundit || profile?.credentials?.default);
     await handleGoogleLoginIfNeeded(page);
 
