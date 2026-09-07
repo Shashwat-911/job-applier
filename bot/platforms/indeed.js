@@ -611,6 +611,14 @@ async function apply(page, job, profile) {
         'button[data-testid*="next"]',
         'button[data-testid*="Next"]',
         'button:has-text("Next")',
+        '.ia-continueButton',
+        'button[class*="Continue"]',
+        'button[class*="continue"]',
+        'button[aria-label*="Continue"]',
+        'button[aria-label*="Next"]',
+        '[data-testid*="form-footer"] button:not([disabled])',
+        '.ia-BasePage-footer button:not([disabled])',
+        'main footer button:not([disabled])',
       ]);
 
       if (continueBtn) {
