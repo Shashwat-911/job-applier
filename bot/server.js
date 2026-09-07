@@ -571,6 +571,10 @@ app.get('/api/bot/stream', (req, res) => {
 // Health check
 // ──────────────────────────────────────────────────────────────────────────────
 
+app.get('/api/bot/status', (req, res) => {
+  res.json({ ok: true, status: botStatus, clients: sseClients.length });
+});
+
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, botStatus, clients: sseClients.length });
 });
