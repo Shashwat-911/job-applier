@@ -46,10 +46,24 @@ const PLATFORM_MAP = {
 
 // ── Logging ──────────────────────────────────────────────────────────────────
 
+const LOG_FILE = path.join(__dirname, 'agent.log');
+
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
-  console.log(`[${ts}] ${msg}`);
+  const formatted = `[${ts}] ${msg}`;
+  console.log(formatted);
+  try {
+    fs.appendFileSync(LOG_FILE, formatted + '\n', 'utf8');
+  } catch (_) {}
 }
+
+process.on('uncaughtException', (err) => {
+  log(`💥 Uncaught Exception: ${err.stack || err.message}`);
+});
+
+process.on('unhandledRejection', (reason) => {
+  log(`💥 Unhandled Rejection: ${reason?.stack || reason}`);
+});
 
 // ── Retry wrapper ─────────────────────────────────────────────────────────────
 
@@ -403,6 +417,6 @@ async function main() {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 main().catch(err => {
-  console.error('💥 Fatal error:', err);
+  log(`💥 Fatal error: ${err.stack || err.message}`);
   process.exit(1);
 });

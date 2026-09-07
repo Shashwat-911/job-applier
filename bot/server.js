@@ -249,6 +249,9 @@ app.post('/api/bot/start', (req, res) => {
     const lines = chunk.toString().split('\n').filter(Boolean);
     lines.forEach(line => {
       console.log('[BOT]', line);
+      try {
+        fs.appendFileSync(path.join(__dirname, 'agent.log'), `[BOT] ${line}\n`, 'utf8');
+      } catch (_) {}
       broadcast('log', { line });
 
       // Detect review pause prompt
@@ -276,6 +279,10 @@ app.post('/api/bot/start', (req, res) => {
   botProcess.stderr.on('data', (chunk) => {
     const lines = chunk.toString().split('\n').filter(Boolean);
     lines.forEach(line => {
+      console.error('[BOT ERR]', line);
+      try {
+        fs.appendFileSync(path.join(__dirname, 'agent.log'), `[BOT ERR] ${line}\n`, 'utf8');
+      } catch (_) {}
       broadcast('log', { line: `[ERR] ${line}` });
     });
   });
