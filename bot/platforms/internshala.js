@@ -230,11 +230,14 @@ async function apply(page, job, profile) {
 
       // Verify actual submission acceptance
       const isConfirmed = await page.waitForSelector(
-        '.application_submitted, .success_message, [class*="success"], text=Applied successfully, text=Application submitted, text=Your application has been submitted',
+        '.application_submitted, .success_message, [class*="success"], text=Applied successfully, text=Application submitted, text=Your application has been submitted, text=Successfully applied',
         { timeout: 5000 }
       ).catch(() => null);
 
-      if (isConfirmed) {
+      const currentUrl = page.url();
+      const isUrlSuccess = currentUrl.includes('/application/') || currentUrl.includes('/student/applications') || currentUrl.includes('success');
+
+      if (isConfirmed || isUrlSuccess) {
         console.log(`  🎉 Confirmed: Application accepted by Internshala for ${job.title} @ ${job.company}`);
         tracker.insertApplication({
           job_title: job.title,
