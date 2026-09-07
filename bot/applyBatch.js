@@ -71,13 +71,34 @@ function getBrowserLaunchOptions() {
   return opts;
 }
 
+const PLATFORM_DOMAINS = {
+  linkedin: 'linkedin.com',
+  indeed: 'indeed.com',
+  naukri: 'naukri.com',
+  wellfound: 'wellfound.com',
+  internshala: 'internshala.com',
+  shine: 'shine.com',
+  foundit: 'foundit.in',
+  glassdoor: 'glassdoor.co.in',
+  unstop: 'unstop.com',
+  cutshort: 'cutshort.io',
+  hirist: 'hirist.tech',
+  remoteok: 'remoteok.com',
+  workatastartup: 'workatastartup.com',
+};
+
 async function loadSessionCookiesForPlatform(context, platformName) {
   try {
     const sessionPath = path.join(__dirname, 'session', `${platformName}.json`);
     if (fs.existsSync(sessionPath)) {
       const cookies = JSON.parse(fs.readFileSync(sessionPath, 'utf8') || '[]');
       if (Array.isArray(cookies) && cookies.length > 0) {
-        const clean = cookies.filter(c => c && c.name && c.value && !c.name.startsWith('__Host-') && !c.name.startsWith('__Secure-'));
+        const domainFilter = PLATFORM_DOMAINS[platformName] || platformName;
+        const clean = cookies.filter(c => {
+          if (!c || !c.name || !c.value) return false;
+          if (c.name.startsWith('__Host-') || c.name.startsWith('__Secure-')) return false;
+          return !c.domain || c.domain.includes(domainFilter);
+        });
         await context.addCookies(clean).catch(() => {});
       }
     }
@@ -140,6 +161,13 @@ async function main() {
     locale: 'en-US',
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
   });
+
+  // Remove Playwright automation fingerprints
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    window.chrome = window.chrome || { runtime: {} };
+  });
+
   let page = await context.newPage();
 
   let appliedCount = 0;

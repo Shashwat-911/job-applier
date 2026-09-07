@@ -28,6 +28,7 @@ function getBaseUrl(location = '') {
 function filterEphemeralCookies(cookies) {
   if (!Array.isArray(cookies)) return [];
   return cookies.filter(c => {
+    if (c.domain && !c.domain.includes('indeed.com')) return false;
     const name = (c.name || '').toLowerCase();
     if (name.startsWith('__cf') || name.startsWith('cf_') || name.includes('cfuvid') || name.includes('_cf_')) {
       return false;

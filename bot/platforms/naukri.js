@@ -208,6 +208,7 @@ async function apply(page, job, profile) {
 
   try {
     if (!page || page.isClosed()) return 'error';
+    await loadSession(page.context());
     console.log(`\n📋 Opening: ${job.title} @ ${job.company}`);
     await page.goto(job.jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await humanDelay(2000, 3000);
@@ -217,9 +218,17 @@ async function apply(page, job, profile) {
       return 'skipped';
     }
 
-    // Naukri's apply button selectors
+    // Check if already applied
+    const alreadyApplied = await page.$('text=Already Applied, .already-applied, [class*="already-applied"], button:has-text("Already Applied")').catch(() => null);
+    if (alreadyApplied) {
+      console.log(`  🎉 Already applied previously to ${job.title} @ ${job.company}`);
+      tracker.insertApplication({ ...job, job_title: job.title, job_url: job.jobUrl, status: 'applied', notes: 'Already applied on Naukri' });
+      return 'applied';
+    }
+
+    // Naukri's apply button selectors (support direct apply, company apply, links, custom classes)
     const applyBtn = await page.$(
-      '#apply-button, .apply-button, button:has-text("Apply"), [class*="applyBtn"], .ia-apply-button'
+      '#apply-button, .apply-button, button:has-text("Apply"), a:has-text("Apply"), [class*="applyBtn"], [class*="apply-button"], [class*="apply-btn"], [class*="btn_apply"], [data-automation-id="apply-btn"], button[id*="apply"], a[id*="apply"], button[title*="Apply"]'
     );
 
     if (!applyBtn) {
@@ -247,7 +256,7 @@ async function apply(page, job, profile) {
 
     // Re-query fresh apply button in case DOM shifted during review pause
     const freshBtn = await page.$(
-      '#apply-button, .apply-button, button:has-text("Apply"), [class*="applyBtn"], .ia-apply-button'
+      '#apply-button, .apply-button, button:has-text("Apply"), a:has-text("Apply"), [class*="applyBtn"], [class*="apply-button"], [class*="apply-btn"], [class*="btn_apply"], [data-automation-id="apply-btn"], button[id*="apply"], a[id*="apply"], button[title*="Apply"]'
     );
     if (!freshBtn) {
       console.warn('  ⚠️ Apply button no longer found after review pause.');
@@ -302,7 +311,8 @@ function _naukiAgeParam(postedWithin) {
 
 async function saveSession(context) {
   if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
-  const cookies = await context.cookies();
+  const allCookies = await context.cookies();
+  const cookies = allCookies.filter(c => !c.domain || c.domain.includes('naukri.com'));
   fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
 }
 

@@ -25,7 +25,8 @@ async function restoreSession(page) {
 
 async function saveSession(context) {
   if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
-  const cookies = await context.cookies();
+  const allCookies = await context.cookies();
+  const cookies = allCookies.filter(c => !c.domain || c.domain.includes('internshala.com'));
   fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
 }
 
@@ -134,7 +135,7 @@ async function apply(page, job, profile) {
     await humanDelay(1500, 2500);
 
     // Check if unauthenticated login prompt appeared
-    const loginModal = await page.$('#login-modal, #registration-modal');
+    const loginModal = await page.$('#login_modal, #login-modal, #registration_modal, #registration-modal, .login-modal, form#login-form');
     if (loginModal && (await loginModal.isVisible().catch(() => false))) {
       console.warn('  ⚠️ Internshala requires login — session cookie unauthenticated');
       return 'skipped';
@@ -166,6 +167,27 @@ async function apply(page, job, profile) {
       } catch (_) {}
     }
 
+    // Also fill visible required assessment text inputs (e.g. projects, years, links)
+    try {
+      const textInputs = await page.$$('input[type="text"]:not([value]), input[type="number"]:not([value])');
+      for (const inp of textInputs) {
+        const isVis = await inp.isVisible().catch(() => false);
+        if (isVis) {
+          const val = await inp.inputValue().catch(() => '');
+          if (!val) {
+            const placeholder = (await inp.getAttribute('placeholder') || '').toLowerCase();
+            if (placeholder.includes('github') || placeholder.includes('portfolio') || placeholder.includes('link') || placeholder.includes('url')) {
+              await inp.fill(profile?.personal?.github || 'https://github.com/Shashwat-911').catch(() => {});
+            } else if (placeholder.includes('experience') || placeholder.includes('year') || placeholder.includes('rate') || placeholder.includes('scale')) {
+              await inp.fill(String(professional?.yearsExperience || '1')).catch(() => {});
+            } else {
+              await inp.fill('1').catch(() => {});
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
     // Auto-select affirmative radio buttons for availability & location
     try {
       const radioButtons = await page.$$('input[type="radio"]');
@@ -192,12 +214,15 @@ async function apply(page, job, profile) {
       await humanDelay(500, 1000);
 
       const submitSelectors = [
-        'button:has-text("Submit application")',
         '#submit',
-        'input[type="submit"]',
-        'button[type="submit"]',
-        'button:has-text("Submit")',
         '#submit_button',
+        'input[type="submit"]',
+        'input[value*="Submit"]',
+        'button:has-text("Submit application")',
+        'button:has-text("Submit")',
+        'button[type="submit"]',
+        '.submit_button',
+        '.btn-primary:has-text("Submit")',
       ];
 
       let submitted = false;

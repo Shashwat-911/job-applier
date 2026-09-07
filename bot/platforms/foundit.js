@@ -17,18 +17,21 @@ const SESSION_PATH = path.join(SESSION_DIR, 'foundit.json');
 async function handleGoogleLoginIfNeeded(page) {
   const url = page.url();
   if (url.includes('/login') || url.includes('/signin') || url.includes('accounts.google.com')) {
-    console.log('👉 Please log in manually in the browser window (waiting up to 2 minutes)...');
+    const isBatch = process.env.BATCH_APPLY_ACTIVE === 'true';
+    const waitTimeout = isBatch ? 10000 : 120000;
+    console.log(`👉 Please log in manually in the browser window (waiting up to ${isBatch ? '10 seconds' : '2 minutes'})...`);
     try {
       await page.waitForFunction(
         () => !window.location.href.includes('/login') && 
               !window.location.href.includes('/signin') &&
               !window.location.href.includes('accounts.google.com'),
-        { timeout: 120000 }
+        { timeout: waitTimeout }
       );
       console.log('✅ Logged in successfully');
 
       if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
-      const cookies = await page.context().cookies();
+      const allCookies = await page.context().cookies();
+      const cookies = allCookies.filter(c => !c.domain || c.domain.includes('foundit.in'));
       fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
     } catch (_) {
       console.warn('  ⚠️ Login wait timed out — continuing');
@@ -140,15 +143,32 @@ async function apply(page, job, profile) {
     await handleLoginIfPrompted(page, profile?.credentials?.foundit || profile?.credentials?.default);
     await handleGoogleLoginIfNeeded(page);
 
+    // Check if already applied
+    const alreadyApplied = await page.$('text=Already Applied, [class*="already-applied"], text=You have already applied').catch(() => null);
+    if (alreadyApplied) {
+      console.log(`  🎉 Already applied previously on Foundit for ${job.title} @ ${job.company}`);
+      tracker.insertApplication({ ...job, job_title: job.title, job_url: job.jobUrl, status: 'applied', notes: 'Already applied on Foundit' });
+      return 'applied';
+    }
+
     // Find the first VISIBLE apply button
     const applySelectors = [
       'button:has-text("Apply")',
       'button:has-text("Quick Apply")',
+      'button:has-text("Apply Now")',
       'a:has-text("Apply Now")',
       'a:has-text("Apply")',
+      'a:has-text("Quick Apply")',
       '.applyBtn',
       '[class*="applyButton"]',
       'a[class*="apply"]',
+      'button[class*="apply"]',
+      '[data-testid*="apply"]',
+      '.btn-apply',
+      'button:has-text("Apply on")',
+      'a:has-text("Apply on")',
+      'button:has-text("Login to Apply")',
+      'a:has-text("Login to Apply")',
     ];
 
     let applyBtn = null;

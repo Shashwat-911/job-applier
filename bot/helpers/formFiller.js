@@ -256,6 +256,9 @@ async function detectCaptcha(page) {
     'checking if the site connection is secure',
     'are you a robot',
     'not a robot',
+    'access denied',
+    'edgesuite.net',
+    '403 forbidden',
   ];
   for (const indicator of blockedIndicators) {
     if (url.includes(indicator) || title.includes(indicator)) {
@@ -274,9 +277,12 @@ async function detectCaptcha(page) {
       bodyText.includes('verifying you are human') ||
       bodyText.includes('checking if the site connection is secure') ||
       bodyText.includes('additional verification required') ||
+      bodyText.includes('access denied') ||
+      bodyText.includes("you don't have permission to access") ||
+      bodyText.includes('edgesuite.net') ||
       (bodyText.includes('ray id:') && bodyText.includes('cloudflare'))
     ) {
-      console.warn(`  🤖 Cloudflare/Bot challenge detected via page text`);
+      console.warn(`  🤖 WAF/Cloudflare/Bot challenge detected via page text`);
       return true;
     }
   } catch (_) {

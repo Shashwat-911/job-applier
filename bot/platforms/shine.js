@@ -25,7 +25,8 @@ async function restoreSession(page) {
 
 async function saveSession(context) {
   if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
-  const cookies = await context.cookies();
+  const allCookies = await context.cookies();
+  const cookies = allCookies.filter(c => !c.domain || c.domain.includes('shine.com'));
   fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
 }
 
