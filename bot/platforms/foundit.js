@@ -14,12 +14,14 @@ const BASE_URL = 'https://www.foundit.in';
 const SESSION_DIR = path.join(__dirname, '..', 'session');
 const SESSION_PATH = path.join(SESSION_DIR, 'foundit.json');
 
+const SENSITIVE_BOT_COOKIES = new Set(['_abck', 'ak_bmsc', 'bm_sz', 'bm_sv', 'bm_s', 'bm_so', 'bm_lso', '__cf_bm']);
+
 async function handleGoogleLoginIfNeeded(page) {
   const url = page.url();
   if (url.includes('/login') || url.includes('/signin') || url.includes('accounts.google.com')) {
     const isBatch = process.env.BATCH_APPLY_ACTIVE === 'true';
-    const waitTimeout = isBatch ? 10000 : 120000;
-    console.log(`👉 Please log in manually in the browser window (waiting up to ${isBatch ? '10 seconds' : '2 minutes'})...`);
+    const waitTimeout = isBatch ? 60000 : 120000;
+    console.log(`👉 Please log in manually in the browser window (waiting up to ${isBatch ? '60 seconds' : '2 minutes'})...`);
     try {
       await page.waitForFunction(
         () => !window.location.href.includes('/login') && 
@@ -31,7 +33,7 @@ async function handleGoogleLoginIfNeeded(page) {
 
       if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
       const allCookies = await page.context().cookies();
-      const cookies = allCookies.filter(c => !c.domain || c.domain.includes('foundit.in'));
+      const cookies = allCookies.filter(c => (!c.domain || c.domain.includes('foundit.in')) && !SENSITIVE_BOT_COOKIES.has(c.name));
       fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
     } catch (_) {
       console.warn('  ⚠️ Login wait timed out — continuing');
@@ -39,11 +41,25 @@ async function handleGoogleLoginIfNeeded(page) {
   }
 }
 
+async function purgeAkamaiCookies(context) {
+  try {
+    const cookies = await context.cookies();
+    const badCookies = cookies.filter(c => 
+      (c.domain && c.domain.includes('foundit.in')) && SENSITIVE_BOT_COOKIES.has(c.name)
+    );
+    for (const c of badCookies) {
+      await context.clearCookies({ name: c.name, domain: c.domain }).catch(() => {});
+    }
+  } catch (_) {}
+}
+
 async function restoreSession(page) {
+  await purgeAkamaiCookies(page.context());
   if (fs.existsSync(SESSION_PATH)) {
     try {
       const cookies = JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'));
-      await page.context().addCookies(cookies);
+      const safeCookies = (Array.isArray(cookies) ? cookies : []).filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+      await page.context().addCookies(safeCookies);
     } catch (_) {}
   }
 }
@@ -61,6 +77,7 @@ async function search(page, profile) {
     console.log(`   URL: ${searchUrl}`);
 
     try {
+      await purgeAkamaiCookies(page.context());
       await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       await humanDelay(2000, 3500);
       await handleGoogleLoginIfNeeded(page);
@@ -89,12 +106,15 @@ async function search(page, profile) {
             let rawUrl = (linkEl && linkEl.href) ? linkEl.href : (titleEl.href || '');
             if (!rawUrl) {
               const dataId = card.getAttribute('data-job-id') || card.getAttribute('data-id') || card.id;
-              if (dataId) rawUrl = `https://www.foundit.in/job/${dataId}`;
+              if (dataId) rawUrl = `https://www.foundit.in/job-desc/${dataId}`;
             }
             if (rawUrl && rawUrl.startsWith('/')) {
               rawUrl = 'https://www.foundit.in' + rawUrl;
             }
-            const cleanUrl = rawUrl ? rawUrl.split('?')[0] : '';
+            let cleanUrl = rawUrl ? rawUrl.split('?')[0] : '';
+            if (cleanUrl.includes('/job/') && !cleanUrl.includes('/job-desc/')) {
+              cleanUrl = cleanUrl.replace('/job/', '/job-desc/');
+            }
             if (!cleanUrl || cleanUrl.includes('/career-services/') || cleanUrl.includes('talk-to-us') || !cleanUrl.match(/\/(job|job-desc)\//)) {
               return;
             }
@@ -134,7 +154,8 @@ async function apply(page, job, profile) {
   try {
     console.log(`\n📋 Opening: ${job.title} @ ${job.company}`);
     await restoreSession(page);
-    await page.goto(job.jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // Passing referer prevents Akamai WAF 403 Access Denied block
+    await page.goto(job.jobUrl, { referer: 'https://www.foundit.in/srp/results', waitUntil: 'domcontentloaded', timeout: 30000 });
     await humanDelay(2000, 3500);
 
     if (await detectCaptcha(page)) return 'skipped';
@@ -153,6 +174,9 @@ async function apply(page, job, profile) {
 
     // Find the first VISIBLE apply button
     const applySelectors = [
+      '#applyNowBtn',
+      'button#applyNowBtn',
+      'a#applyNowBtn',
       'button:has-text("Apply")',
       'button:has-text("Quick Apply")',
       'button:has-text("Apply Now")',
@@ -220,8 +244,8 @@ async function apply(page, job, profile) {
 
       // Verify actual application confirmation
       const isConfirmed = await page.waitForSelector(
-        'text="Applied successfully", text="Application submitted", text="Already Applied", text="You have already applied", [class*="success"], .appliedBadge',
-        { timeout: 5000 }
+        'text="Applied successfully", text="Application submitted", text="Already Applied", text="You have already applied", text="Applied", [class*="success"], .appliedBadge',
+        { timeout: 8000 }
       ).catch(() => null);
 
       if (isConfirmed || currentUrl.includes('applied') || currentUrl.includes('success')) {
