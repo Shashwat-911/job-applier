@@ -33,11 +33,14 @@ async function handleGoogleLoginIfNeeded(page) {
   }
 }
 
+const SENSITIVE_BOT_COOKIES = new Set(['_abck', 'ak_bmsc', 'bm_sz', 'bm_sv', 'bm_s', 'bm_so', 'bm_lso', '__cf_bm']);
+
 async function restoreSession(page) {
   if (fs.existsSync(SESSION_PATH)) {
     try {
       const cookies = JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'));
-      await page.context().addCookies(cookies);
+      const safeCookies = (Array.isArray(cookies) ? cookies : []).filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+      await page.context().addCookies(safeCookies);
     } catch (_) {}
   }
 }
@@ -71,31 +74,35 @@ async function loginLinkedIn(page, profile) {
       await humanDelay(3000, 5000);
     }
 
-    // Check if security challenge or OTP was triggered
-    const currentUrl = page.url();
-    if (currentUrl.includes('/checkpoint') || currentUrl.includes('/challenge') || (await detectCaptcha(page))) {
-      console.warn('  🤖 LinkedIn security check or verification code required.');
-      console.warn('  👉 Please complete the challenge or enter the code in the browser window (waiting up to 90s)...');
+    // Check if security challenge, OTP, or authwall was triggered
+    let finalUrl = page.url();
+    let loggedIn = !finalUrl.includes('/login') && !finalUrl.includes('/uas/') && !finalUrl.includes('/authwall') && !finalUrl.includes('/checkpoint');
+
+    if (!loggedIn) {
+      console.warn('  🤖 LinkedIn security check, verification code, or login screen detected.');
+      console.warn('  👉 Please complete login in the open browser window (waiting up to 90s)...');
       try {
         await page.waitForFunction(
           () => !window.location.href.includes('/checkpoint') &&
                 !window.location.href.includes('/challenge') &&
                 !window.location.href.includes('/login') &&
-                !window.location.href.includes('/uas/'),
+                !window.location.href.includes('/uas/') &&
+                !window.location.href.includes('/authwall'),
           { timeout: 90000 }
         );
-        console.log('  ✅ Challenge passed in browser window!');
+        finalUrl = page.url();
+        loggedIn = !finalUrl.includes('/login') && !finalUrl.includes('/uas/') && !finalUrl.includes('/authwall');
+        if (loggedIn) console.log('  ✅ LinkedIn authentication completed!');
       } catch (_) {
         console.warn('  ⚠️ Verification window timed out.');
       }
     }
 
-    const finalUrl = page.url();
-    const loggedIn = !finalUrl.includes('/login') && !finalUrl.includes('/uas/') && !finalUrl.includes('/authwall');
     if (loggedIn) {
       console.log('  ✅ LinkedIn logged in successfully!');
       if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
-      const cookies = await page.context().cookies();
+      const allCookies = await page.context().cookies();
+      const cookies = allCookies.filter(c => (!c.domain || c.domain.includes('linkedin.com')) && !SENSITIVE_BOT_COOKIES.has(c.name));
       fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
       return true;
     }
@@ -408,14 +415,15 @@ async function apply(page, job, profile) {
 async function saveSession(context) {
   if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
   const allCookies = await context.cookies();
-  const cookies = allCookies.filter(c => !c.domain || c.domain.includes('linkedin.com'));
+  const cookies = allCookies.filter(c => (!c.domain || c.domain.includes('linkedin.com')) && !SENSITIVE_BOT_COOKIES.has(c.name));
   fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
 }
 
 async function loadSession(context) {
   if (fs.existsSync(SESSION_PATH)) {
     const cookies = JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'));
-    await context.addCookies(cookies);
+    const safeCookies = (Array.isArray(cookies) ? cookies : []).filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+    await context.addCookies(safeCookies);
     return true;
   }
   return false;
