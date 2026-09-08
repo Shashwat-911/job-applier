@@ -31,26 +31,28 @@ function getBraveExecutable() {
 }
 
 const PLATFORMS = [
-  { name: 'linkedin',       domain: '.linkedin.com',       url: 'https://www.linkedin.com/feed' },
-  { name: 'indeed',         domain: '.indeed.com',         url: 'https://www.indeed.com' },
-  { name: 'naukri',         domain: '.naukri.com',         url: 'https://www.naukri.com' },
-  { name: 'wellfound',      domain: '.wellfound.com',      url: 'https://wellfound.com/jobs' },
-  { name: 'internshala',    domain: '.internshala.com',    url: 'https://internshala.com' },
-  { name: 'shine',          domain: '.shine.com',          url: 'https://www.shine.com' },
-  { name: 'foundit',        domain: '.foundit.in',         url: 'https://www.foundit.in' },
-  { name: 'glassdoor',      domain: '.glassdoor.com',      url: 'https://www.glassdoor.com' },
-  { name: 'unstop',         domain: '.unstop.com',         url: 'https://unstop.com' },
-  { name: 'cutshort',       domain: '.cutshort.io',        url: 'https://cutshort.io' },
-  { name: 'hirist',         domain: '.hirist.tech',        url: 'https://www.hirist.tech' },
-  { name: 'remoteok',       domain: '.remoteok.com',       url: 'https://remoteok.com' },
-  { name: 'workatastartup', domain: '.workatastartup.com', url: 'https://www.workatastartup.com' },
+  { name: 'linkedin',       domains: ['.linkedin.com'],                          url: 'https://www.linkedin.com/feed' },
+  { name: 'indeed',         domains: ['.indeed.com'],                            url: 'https://www.indeed.com' },
+  { name: 'naukri',         domains: ['.naukri.com'],                            url: 'https://www.naukri.com' },
+  { name: 'wellfound',      domains: ['.wellfound.com'],                         url: 'https://wellfound.com/jobs' },
+  { name: 'internshala',    domains: ['.internshala.com'],                       url: 'https://internshala.com' },
+  { name: 'shine',          domains: ['.shine.com'],                             url: 'https://www.shine.com' },
+  { name: 'foundit',        domains: ['.foundit.in'],                            url: 'https://www.foundit.in' },
+  { name: 'glassdoor',      domains: ['.glassdoor.com', '.glassdoor.co.in'],     url: 'https://www.glassdoor.co.in' },
+  { name: 'unstop',         domains: ['.unstop.com'],                            url: 'https://unstop.com' },
+  { name: 'cutshort',       domains: ['.cutshort.io'],                           url: 'https://cutshort.io' },
+  { name: 'hirist',         domains: ['.hirist.tech'],                           url: 'https://www.hirist.tech' },
+  { name: 'remoteok',       domains: ['.remoteok.com'],                          url: 'https://remoteok.com' },
+  { name: 'workatastartup', domains: ['.workatastartup.com'],                    url: 'https://www.workatastartup.com' },
 ];
+
+const SENSITIVE_BOT_COOKIES = new Set(['_abck', 'ak_bmsc', 'bm_sz', 'bm_sv', 'bm_s', 'bm_so', 'bm_lso', '__cf_bm']);
 
 function filterEphemeralCookies(cookies) {
   if (!Array.isArray(cookies)) return [];
   return cookies.filter(c => {
     const name = (c.name || '').toLowerCase();
-    if (name.startsWith('__cf') || name.startsWith('cf_') || name.includes('cfuvid') || name.includes('_cf_')) {
+    if (SENSITIVE_BOT_COOKIES.has(name)) {
       return false;
     }
     return true;
@@ -89,8 +91,9 @@ async function harvestSessions() {
       // Get all cookies for this domain
       const allCookies = await context.cookies();
       const platformCookies = allCookies.filter(c => 
-        c.domain.includes(platform.domain.replace('.', '')) ||
-        c.domain === platform.domain
+        (platform.domains || [platform.domain]).some(d => 
+          c.domain.includes(d.replace(/^\./, '')) || c.domain === d
+        )
       );
 
       const cleanCookies = filterEphemeralCookies(platformCookies);
