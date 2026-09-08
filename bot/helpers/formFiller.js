@@ -241,9 +241,42 @@ async function detectCaptcha(page) {
     }
   }
 
-  // Also check page title / URL (avoid false positive on 'robotics')
-  const url   = (page.url() || '').toLowerCase();
-  const title = (await page.title().catch(() => '')).toLowerCase();
+  // Check for transient Cloudflare / Turnstile challenges and wait up to 8s for auto-resolution / interactive click
+  let title = (await page.title().catch(() => '')).toLowerCase();
+  let url   = (page.url() || '').toLowerCase();
+
+  const isCloudflareChallenge = title.includes('just a moment...') || 
+                                title.includes('checking if the site connection is secure') ||
+                                url.includes('challenges.cloudflare.com') ||
+                                url.includes('challenge-platform');
+
+  if (isCloudflareChallenge) {
+    console.log('  ⏳ Waiting for Cloudflare challenge (attempting auto-resolution / Turnstile click)…');
+    // Check if there is an interactive Turnstile iframe checkbox to click
+    try {
+      const turnstileFrame = page.frames().find(f => f.url().includes('cloudflare.com') || f.url().includes('turnstile'));
+      if (turnstileFrame) {
+        const checkbox = await turnstileFrame.$('input[type="checkbox"], .ctp-checkbox-label, #challenge-stage, label.ctp-checkbox-label');
+        if (checkbox) {
+          console.log('  👆 Clicking Cloudflare Turnstile verification checkbox…');
+          await checkbox.click({ force: true }).catch(() => {});
+        }
+      }
+    } catch (_) {}
+
+    for (let waitStep = 0; waitStep < 5; waitStep++) {
+      await page.waitForTimeout(1500).catch(() => {});
+      title = (await page.title().catch(() => '')).toLowerCase();
+      url   = (page.url() || '').toLowerCase();
+      if (!title.includes('just a moment...') && 
+          !title.includes('checking if the site connection is secure') &&
+          !url.includes('challenges.cloudflare.com')) {
+        console.log('  ✅ Cloudflare challenge cleared!');
+        break;
+      }
+    }
+  }
+
   const blockedIndicators = [
     'recaptcha',
     'hcaptcha',
