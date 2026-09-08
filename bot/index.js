@@ -113,63 +113,90 @@ async function main() {
 
   // ── Browser setup ─────────────────────────────────────────────────────────
 
+  // ── Browser setup ─────────────────────────────────────────────────────────
+
   const SESSION_DIR = path.join(__dirname, 'session');
+  const userDataDir = path.join(__dirname, 'browser_data');
+  if (!fs.existsSync(userDataDir)) fs.mkdirSync(userDataDir, { recursive: true });
 
-  function getBrowserLaunchOptions() {
-    let execPath = null;
-    if (os.platform() === 'win32') {
-      const p = 'C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe';
-      if (fs.existsSync(p)) execPath = p;
-    } else if (os.platform() === 'darwin') {
-      const p = '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser';
-      if (fs.existsSync(p)) execPath = p;
-    } else {
-      const p = '/usr/bin/brave-browser';
-      if (fs.existsSync(p)) execPath = p;
+  const SENSITIVE_BOT_COOKIES = new Set(['_abck', 'ak_bmsc', 'bm_sz', 'bm_sv', 'bm_s', 'bm_so', 'bm_lso', '__cf_bm']);
+
+  async function loadSessionCookiesForPlatform(targetContext, platformName) {
+    const sessionFile = path.join(SESSION_DIR, `${platformName}.json`);
+    const legacyNaukri = path.join(SESSION_DIR, 'naukri_cookies.json');
+    const targetFile = (platformName === 'naukri' && !fs.existsSync(sessionFile) && fs.existsSync(legacyNaukri))
+      ? legacyNaukri
+      : sessionFile;
+
+    if (fs.existsSync(targetFile)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(targetFile, 'utf8'));
+        if (Array.isArray(raw)) {
+          const safeCookies = raw.filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+          await targetContext.addCookies(safeCookies);
+        }
+      } catch (_) {}
     }
-
-    const opts = {
-      headless: false,
-      slowMo:   50,
-      ignoreDefaultArgs: ['--enable-automation'],
-      args: [
-        '--no-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
-      ],
-    };
-
-    if (execPath) {
-      log(`🌐 Using detected Brave browser: ${execPath}`);
-      opts.executablePath = execPath;
-    }
-
-    return opts;
   }
 
-  let browser;
-  try {
-    browser = await chromium.launch(getBrowserLaunchOptions());
-  } catch (launchErr) {
-    log(`⚠️ Primary browser launch failed (${launchErr.message}), falling back to chromium...`);
-    browser = await chromium.launch({
-      headless: false,
-      slowMo:   50,
-      ignoreDefaultArgs: ['--enable-automation'],
-      args: [
-        '--no-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
-      ],
-    });
-  }
-
-  const context = await browser.newContext({
+  const launchOptions = {
+    headless: false,
     viewport:  { width: 1280, height: 800 },
     locale:    'en-US',
-  });
+    slowMo:    50,
+    ignoreDefaultArgs: ['--enable-automation'],
+    args: [
+      '--no-sandbox',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-infobars',
+    ],
+  };
 
-  let page = await context.newPage();
+  let execPath = null;
+  if (os.platform() === 'win32') {
+    const p = 'C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe';
+    if (fs.existsSync(p)) execPath = p;
+  } else if (os.platform() === 'darwin') {
+    const p = '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser';
+    if (fs.existsSync(p)) execPath = p;
+  } else {
+    const p = '/usr/bin/brave-browser';
+    if (fs.existsSync(p)) execPath = p;
+  }
+
+  if (execPath) {
+    log(`🌐 Using detected Brave browser: ${execPath}`);
+    launchOptions.executablePath = execPath;
+  }
+
+  let context;
+  try {
+    context = await chromium.launchPersistentContext(userDataDir, launchOptions);
+  } catch (launchErr) {
+    log(`⚠️ Primary browser launch failed (${launchErr.message}), falling back to chromium persistent context...`);
+    delete launchOptions.executablePath;
+    try {
+      context = await chromium.launchPersistentContext(userDataDir, launchOptions);
+    } catch (fallbackErr) {
+      log(`⚠️ Chromium persistent launch failed (${fallbackErr.message}), falling back to standard chromium launch...`);
+      const fallbackBrowser = await chromium.launch({
+        headless: false,
+        slowMo:   50,
+        ignoreDefaultArgs: ['--enable-automation'],
+        args: [
+          '--no-sandbox',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-infobars',
+        ],
+      });
+      context = await fallbackBrowser.newContext({
+        viewport:  { width: 1280, height: 800 },
+        locale:    'en-US',
+      });
+    }
+  }
+
+  let page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
 
   // Remove Playwright fingerprints
   await context.addInitScript(() => {
@@ -201,20 +228,21 @@ async function main() {
   for (const platformName of orderedPlatforms) {
     if (shouldQuit) break;
 
-    if (!browser.isConnected()) {
+    try {
+      if (context.pages().length === 0 || page.isClosed()) {
+        page = context.pages().find(p => !p.isClosed()) || await context.newPage();
+      }
+    } catch (_) {
       log('🛑 Browser window was closed or disconnected. Stopping run.');
       break;
-    }
-
-    if (page.isClosed()) {
-      log('⚠️ Reopening fresh browser page for next platform…');
-      page = await context.newPage();
     }
 
     const platform = PLATFORM_MAP[platformName];
     log(`\n${'═'.repeat(55)}`);
     log(`  Platform: ${platformName.toUpperCase()}`);
     log(`${'═'.repeat(55)}`);
+
+    await loadSessionCookiesForPlatform(context, platformName);
 
     let jobs = [];
     let searchProfile = profile;
@@ -344,15 +372,15 @@ async function main() {
     for (let i = 0; i < jobs.length; i++) {
       if (shouldQuit) break;
 
-      if (!browser.isConnected()) {
+      try {
+        if (page.isClosed()) {
+          log('⚠️ Browser page was closed. Reopening fresh page to continue…');
+          page = context.pages().find(p => !p.isClosed()) || await context.newPage();
+        }
+      } catch (_) {
         log('🛑 Browser window was closed or disconnected. Stopping run.');
         shouldQuit = true;
         break;
-      }
-
-      if (page.isClosed()) {
-        log('⚠️ Browser page was closed. Reopening fresh page to continue…');
-        page = await context.newPage();
       }
 
       const job = jobs[i];
@@ -420,7 +448,9 @@ async function main() {
   log(`  ❌ Errors:   ${totalErrors}`);
   log(`${'═'.repeat(55)}\n`);
 
-  await browser.close();
+  try {
+    await context.close();
+  } catch (_) {}
   process.exit(0);
 }
 
