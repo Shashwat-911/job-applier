@@ -183,12 +183,33 @@ function findExistingApplication(jobUrl, company, jobTitle) {
 }
 
 function isJobAlreadyProcessed(jobUrl, company, jobTitle) {
-  return findExistingApplication(jobUrl, company, jobTitle) !== null;
+  const existing = findExistingApplication(jobUrl, company, jobTitle);
+  if (!existing) return false;
+  // If already successfully applied, definitely skip
+  if (existing.status === 'applied') return true;
+  // If explicitly skipped by user manually from dashboard review queue, keep as processed
+  if (existing.notes && existing.notes.includes('Skipped by user')) return true;
+  // If status is interviewing, offer, or rejected, definitely processed
+  if (['interviewing', 'offer', 'rejected'].includes(existing.status)) return true;
+  // Otherwise, it was skipped due to transient errors (CAPTCHA, verification timeout, session failure)
+  // Allow it to be re-evaluated and retried
+  return false;
 }
 
 function isJobAlreadyApplied(jobUrl, company, jobTitle) {
   const existing = findExistingApplication(jobUrl, company, jobTitle);
   return existing !== null && existing.status === 'applied';
+}
+
+function resetSkippedJobs(platform = null) {
+  try {
+    if (platform) {
+      return db.prepare(`DELETE FROM applications WHERE status = 'skipped' AND platform = ? AND (notes IS NULL OR notes NOT LIKE '%Skipped by user%')`).run(platform);
+    }
+    return db.prepare(`DELETE FROM applications WHERE status = 'skipped' AND (notes IS NULL OR notes NOT LIKE '%Skipped by user%')`).run();
+  } catch (err) {
+    return { changes: 0, error: err.message };
+  }
 }
 
 /**
@@ -544,6 +565,7 @@ module.exports = {
   findExistingApplication,
   isJobAlreadyProcessed,
   isJobAlreadyApplied,
+  resetSkippedJobs,
   deduplicateDatabase,
   db, // expose raw db for advanced use
 };
