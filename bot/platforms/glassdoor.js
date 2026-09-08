@@ -14,6 +14,8 @@ const BASE_URL = 'https://www.glassdoor.com';
 const SESSION_DIR = path.join(__dirname, '..', 'session');
 const SESSION_PATH = path.join(SESSION_DIR, 'glassdoor.json');
 
+const SENSITIVE_BOT_COOKIES = new Set(['_abck', 'ak_bmsc', 'bm_sz', 'bm_sv', 'bm_s', 'bm_so', 'bm_lso', '__cf_bm']);
+
 async function handleGoogleLoginIfNeeded(page) {
   const url = page.url();
   if (url.includes('/login') || url.includes('/signin') || url.includes('accounts.google.com')) {
@@ -27,7 +29,11 @@ async function handleGoogleLoginIfNeeded(page) {
     console.log('✅ Logged in successfully');
 
     if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
-    const cookies = await page.context().cookies();
+    const allCookies = await page.context().cookies();
+    const cookies = allCookies.filter(c => 
+      (!c.domain || c.domain.includes('glassdoor.com') || c.domain.includes('glassdoor.co.in')) &&
+      !SENSITIVE_BOT_COOKIES.has(c.name)
+    );
     fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
   }
 }
@@ -36,7 +42,8 @@ async function restoreSession(page) {
   if (fs.existsSync(SESSION_PATH)) {
     try {
       const cookies = JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'));
-      await page.context().addCookies(cookies);
+      const safeCookies = (Array.isArray(cookies) ? cookies : []).filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+      await page.context().addCookies(safeCookies);
     } catch (_) {}
   }
 }
@@ -135,13 +142,20 @@ async function apply(page, job, profile) {
     await handleLoginIfPrompted(page, profile?.credentials?.glassdoor || profile?.credentials?.default);
     await handleGoogleLoginIfNeeded(page);
 
-    const easyApplyBtn = await page.$('button[data-easy-apply="true"], button:has-text("Easy Apply"), button[data-test="easy-apply-button"]');
+    const easyApplyBtn = await page.$(
+      'button[data-easy-apply="true"], button:has-text("Easy Apply"), button[data-test="easy-apply-button"], button[data-test*="easyApply"], [data-test*="easy-apply"], button:has-text("Apply Now")'
+    );
     if (!easyApplyBtn) {
-      console.warn('  ⚠️ No Easy Apply button on Glassdoor');
+      const isExternal = await page.$('button:has-text("Apply on employer site"), a:has-text("Apply on employer site"), button:has-text("Apply on Company Site")');
+      if (isExternal) {
+        console.log('  🌐 Glassdoor job links externally to employer career site — skipping');
+      } else {
+        console.warn('  ⚠️ No Easy Apply button on Glassdoor');
+      }
       return 'skipped';
     }
 
-    await easyApplyBtn.click();
+    await easyApplyBtn.click({ force: true }).catch(() => {});
     await humanDelay(2000, 3000);
 
     // Check again if clicking Easy Apply opened a login modal or Google OAuth
@@ -157,21 +171,60 @@ async function apply(page, job, profile) {
     });
 
     if (action === 'submit') {
-      const submitBtn = await page.$('button[type="submit"], button:has-text("Submit Application")');
-      if (submitBtn) await submitBtn.click();
-      await humanDelay(2000, 3000);
+      // Step through multi-step Glassdoor Easy Apply form
+      for (let step = 0; step < 5; step++) {
+        const submitBtn = await page.$(
+          'button:has-text("Submit Application"), button:has-text("Submit"), button[type="submit"]'
+        );
+        if (submitBtn && (await submitBtn.isVisible().catch(() => false))) {
+          await submitBtn.click().catch(() => {});
+          await humanDelay(2000, 3000);
+          break;
+        }
 
-      tracker.insertApplication({
-        job_title: job.title,
-        company: job.company,
-        platform: 'glassdoor',
-        job_url: job.jobUrl,
-        status: 'applied',
-        notes: 'Easy Apply via Glassdoor',
-        salary_range: job.salary,
-        location: job.location,
-      });
-      return 'applied';
+        const nextBtn = await page.$(
+          'button:has-text("Continue"), button:has-text("Next"), button[data-test="continue-button"], button:has-text("Review")'
+        );
+        if (nextBtn && (await nextBtn.isVisible().catch(() => false))) {
+          await nextBtn.click().catch(() => {});
+          await humanDelay(1500, 2500);
+        } else {
+          break;
+        }
+      }
+
+      const isConfirmed = await page.waitForSelector(
+        'text=Application Submitted, text=Successfully Applied, text=Applied, [class*="Success"], [class*="success"]',
+        { timeout: 8000 }
+      ).catch(() => null);
+
+      if (isConfirmed) {
+        console.log(`  🎉 Confirmed: Applied via Glassdoor for ${job.title} @ ${job.company}`);
+        tracker.insertApplication({
+          job_title: job.title,
+          company: job.company,
+          platform: 'glassdoor',
+          job_url: job.jobUrl,
+          status: 'applied',
+          notes: 'Easy Apply via Glassdoor',
+          salary_range: job.salary,
+          location: job.location,
+        });
+        return 'applied';
+      } else {
+        console.warn(`  ⚠️ Glassdoor submission unverified for ${job.title} @ ${job.company}`);
+        tracker.insertApplication({
+          job_title: job.title,
+          company: job.company,
+          platform: 'glassdoor',
+          job_url: job.jobUrl,
+          status: 'skipped',
+          notes: 'Submission unverified',
+          salary_range: job.salary,
+          location: job.location,
+        });
+        return 'skipped';
+      }
     } else if (action === 'skip') {
       return 'skipped';
     } else {
