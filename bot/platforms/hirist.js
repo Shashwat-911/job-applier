@@ -14,11 +14,14 @@ const BASE_URL = 'https://www.hirist.tech';
 const SESSION_DIR = path.join(__dirname, '..', 'session');
 const SESSION_PATH = path.join(SESSION_DIR, 'hirist.json');
 
+const SENSITIVE_BOT_COOKIES = new Set(['_abck', 'ak_bmsc', 'bm_sz', 'bm_sv', 'bm_s', 'bm_so', 'bm_lso', '__cf_bm']);
+
 async function restoreSession(page) {
   if (fs.existsSync(SESSION_PATH)) {
     try {
       const cookies = JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'));
-      await page.context().addCookies(cookies);
+      const safeCookies = (Array.isArray(cookies) ? cookies : []).filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+      await page.context().addCookies(safeCookies);
     } catch (_) {}
   }
 }
@@ -26,7 +29,7 @@ async function restoreSession(page) {
 async function saveSession(context) {
   if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
   const allCookies = await context.cookies();
-  const cookies = allCookies.filter(c => !c.domain || c.domain.includes('hirist.tech') || c.domain.includes('hirist.com'));
+  const cookies = allCookies.filter(c => (!c.domain || c.domain.includes('hirist.tech') || c.domain.includes('hirist.com')) && !SENSITIVE_BOT_COOKIES.has(c.name));
   fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
 }
 
@@ -36,8 +39,8 @@ async function search(page, profile) {
   await restoreSession(page);
 
   for (const role of searchCfg.roles) {
-    const slug = role.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    const searchUrl = `${BASE_URL}/k/${slug}-jobs.html`;
+    const slug = role.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const searchUrl = `${BASE_URL}/search/${slug}?ref=homepage`;
 
     console.log(`\n🔍 Hirist search: "${role}"`);
     console.log(`   URL: ${searchUrl}`);
@@ -53,24 +56,30 @@ async function search(page, profile) {
       }
 
       const extracted = await page.evaluate((maxPer) => {
-        const cards = document.querySelectorAll('.job-list-item, [class*="jobCard"]');
+        const links = document.querySelectorAll('a[href*="/j/"]');
         const results = [];
-        cards.forEach(card => {
+        const seen = new Set();
+        links.forEach(linkEl => {
           if (results.length >= maxPer) return;
           try {
-            const titleEl = card.querySelector('.job-title, a[class*="title"], h3');
-            const compEl = card.querySelector('.company-name, [class*="company"]');
-            const locEl = card.querySelector('.location, [class*="location"]');
-            const expEl = card.querySelector('.experience, [class*="exp"]');
-            const linkEl = card.querySelector('a[href*="/j/"]');
+            const href = linkEl.href ? linkEl.href.split('?')[0] : '';
+            if (!href || seen.has(href)) return;
+            seen.add(href);
 
-            if (!titleEl) return;
+            const card = linkEl.closest('div[class*="job"], div[class*="card"], li, article') || linkEl;
+            const titleEl = card.querySelector('.job-title, a[class*="title"], h3, h4') || linkEl;
+            const compEl = card.querySelector('.company-name, [class*="company"], [class*="recruiter"]');
+            const locEl = card.querySelector('.location, [class*="location"]');
+            const expEl = card.querySelector('.experience, [class*="exp"], [class*="salary"]');
+
+            const title = (titleEl.innerText || '').split('\n')[0].trim();
+            if (!title || title.length < 3) return;
 
             results.push({
-              title: titleEl.innerText.trim(),
+              title,
               company: compEl ? compEl.innerText.trim() : 'Tech Company',
               location: locEl ? locEl.innerText.trim() : 'India',
-              jobUrl: linkEl ? linkEl.href.split('?')[0] : '',
+              jobUrl: href,
               salary: expEl ? expEl.innerText.trim() : '',
               platform: 'hirist',
             });
