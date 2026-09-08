@@ -15,6 +15,8 @@ const BASE_URL = 'https://wellfound.com';
 const SESSION_DIR = path.join(__dirname, '..', 'session');
 const SESSION_PATH = path.join(SESSION_DIR, 'wellfound.json');
 
+const SENSITIVE_BOT_COOKIES = new Set(['_abck', 'ak_bmsc', 'bm_sz', 'bm_sv', 'bm_s', 'bm_so', 'bm_lso', '__cf_bm']);
+
 async function handleGoogleLoginIfNeeded(page) {
   const url = page.url();
   if (url.includes('/login') || url.includes('/signin') || url.includes('accounts.google.com')) {
@@ -29,7 +31,8 @@ async function handleGoogleLoginIfNeeded(page) {
 
     if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
     const cookies = await page.context().cookies();
-    fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
+    const safeCookies = cookies.filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+    fs.writeFileSync(SESSION_PATH, JSON.stringify(safeCookies, null, 2));
   }
 }
 
@@ -37,7 +40,8 @@ async function restoreSession(page) {
   if (fs.existsSync(SESSION_PATH)) {
     try {
       const cookies = JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'));
-      await page.context().addCookies(cookies);
+      const safeCookies = (Array.isArray(cookies) ? cookies : []).filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+      await page.context().addCookies(safeCookies);
     } catch (_) {}
   }
 }
@@ -60,10 +64,9 @@ async function search(page, profile) {
   const jobs = [];
   await restoreSession(page);
 
-
   for (const role of searchCfg.roles) {
-    const encodedRole = encodeURIComponent(role);
-    const searchUrl = `${BASE_URL}/jobs?role=${encodedRole}`;
+    const slug = role.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const searchUrl = `${BASE_URL}/role/${slug}`;
 
     console.log(`\n🔍 Wellfound search: "${role}"`);
     console.log(`   URL: ${searchUrl}`);
@@ -73,30 +76,35 @@ async function search(page, profile) {
       await humanDelay(2500, 4000);
       await handleGoogleLoginIfNeeded(page);
 
-
       if (await detectCaptcha(page)) {
         console.warn('  🤖 CAPTCHA on Wellfound — skipping this role');
         continue;
       }
 
       const extracted = await page.evaluate((maxPer) => {
-        const cards = document.querySelectorAll('[data-test="StartupResult"], div[class*="styles_resultContainer"]');
+        const links = document.querySelectorAll('a[href*="/jobs/"]');
         const results = [];
-        cards.forEach(card => {
+        const seen = new Set();
+        links.forEach(linkEl => {
           if (results.length >= maxPer) return;
           try {
-            const titleEl = card.querySelector('a[class*="styles_title"], [data-test="JobTitle"]');
-            const companyEl = card.querySelector('h2, [class*="styles_startupName"]');
-            const locationEl = card.querySelector('[class*="styles_location"]');
-            const salaryEl = card.querySelector('[class*="styles_compensation"]');
+            const href = linkEl.href ? linkEl.href.split('?')[0] : '';
+            if (!href || seen.has(href) || href.endsWith('/jobs') || href.endsWith('/jobs/')) return;
+            seen.add(href);
 
-            if (!titleEl) return;
+            const title = (linkEl.innerText || '').split('\n')[0].trim();
+            if (!title || title.length < 3) return;
+
+            const card = linkEl.closest('[data-test="StartupResult"], div[class*="styles_resultContainer"], div[class*="styles_jobListing"], div[class*="job"], article') || linkEl;
+            const companyEl = card.querySelector('h2, [class*="styles_startupName"], [class*="company"]');
+            const locationEl = card.querySelector('[class*="styles_location"], [class*="location"]');
+            const salaryEl = card.querySelector('[class*="styles_compensation"], [class*="salary"]');
 
             results.push({
-              title: titleEl.innerText.trim(),
+              title,
               company: companyEl ? companyEl.innerText.trim() : 'Startup',
               location: locationEl ? locationEl.innerText.trim() : 'Remote / Hybrid',
-              jobUrl: titleEl.href ? titleEl.href.split('?')[0] : '',
+              jobUrl: href,
               salary: salaryEl ? salaryEl.innerText.trim() : '',
               platform: 'wellfound',
             });
