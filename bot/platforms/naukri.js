@@ -12,6 +12,8 @@ const path    = require('path');
 
 const BASE_URL    = 'https://www.naukri.com';
 const SESSION_DIR = path.join(__dirname, '..', 'session');
+const SENSITIVE_BOT_COOKIES = new Set(['_abck', 'ak_bmsc', 'bm_sz', 'bm_sv', 'bm_s', 'bm_so', 'bm_lso', '__cf_bm']);
+
 function getCookiesPath() {
   const primary = path.join(SESSION_DIR, 'naukri.json');
   const legacy = path.join(SESSION_DIR, 'naukri_cookies.json');
@@ -180,9 +182,12 @@ async function search(page, profile) {
             jobUrl:   jobHref,
             salary:   salaryEl?.innerText.trim() || '',
             platform: 'naukri',
+            isExternal: Boolean(card.innerText && card.innerText.toLowerCase().includes('apply on company site')),
           });
         } catch (_) {}
       });
+      // Prioritize direct 1-click apply jobs first
+      results.sort((a, b) => (a.isExternal === b.isExternal ? 0 : a.isExternal ? 1 : -1));
       return results;
     }, { max: maxPer, skip: skipKw });
 
@@ -270,7 +275,32 @@ async function apply(page, job, profile) {
     const popup = await popupPromise;
     const targetScope = (popup && !popup.isClosed()) ? popup : page;
 
-    await humanDelay(2000, 4000);
+    await humanDelay(2000, 3500);
+
+    // Check if redirected to external company site
+    if (!targetScope.url().includes('naukri.com')) {
+      console.warn(`  🌐 Naukri redirected to external site: ${targetScope.url()} — skipping`);
+      tracker.insertApplication({ ...job, job_title: job.title, job_url: job.jobUrl, status: 'skipped', notes: 'External company site redirect' });
+      return 'skipped';
+    }
+
+    // Handle questionnaire drawer or chatbot if it appears
+    try {
+      const drawerVisible = await targetScope.$('.chatbot_drawer, .bot-container, [class*="chat-bot"], [class*="drawer"]').then(Boolean).catch(() => false);
+      if (drawerVisible) {
+        console.log('  💬 Handling Naukri questionnaire / chatbot drawer…');
+        // Answer questions by selecting first positive chips/options
+        for (let q = 0; q < 5; q++) {
+          const option = await targetScope.$('.bot-container button:not([disabled]), .chatbot_drawer button:not([disabled]), .chip:not([disabled]), .option-item');
+          if (option && await option.isVisible().catch(() => false)) {
+            await option.click({ timeout: 2500, force: true }).catch(() => {});
+            await humanDelay(1000, 2000);
+          } else {
+            break;
+          }
+        }
+      }
+    } catch (_) {}
 
     // Handle post-click modal (cover letter, etc.)
     const coverTextarea = await targetScope.$('textarea[name*="cover"], #coverLetter, textarea[placeholder*="cover"]').catch(() => null);
@@ -279,21 +309,28 @@ async function apply(page, job, profile) {
       await humanDelay(500, 1000);
     }
 
-    const modalSubmit = await targetScope.$('button:has-text("Apply"), button:has-text("Submit"), #submit-apply').catch(() => null);
-    if (modalSubmit) {
+    const modalSubmit = await targetScope.$(
+      'button:has-text("Save and apply"), button:has-text("Save & apply"), button:has-text("Save & Apply"), button:has-text("Apply"), button:has-text("Submit"), #submit-apply'
+    ).catch(() => null);
+    if (modalSubmit && (await modalSubmit.isVisible().catch(() => false))) {
       await modalSubmit.click().catch(() => {});
       await humanDelay(2000, 3000);
     }
 
     // Confirm success
-    const successIndicator = await targetScope.$('[class*="success"], [class*="applied"], .checkmark').catch(() => null);
-    if (successIndicator) {
+    const successIndicator = await targetScope.waitForSelector(
+      '[class*="success"], [class*="applied"], .checkmark, text=Applied, text=Application submitted, text=Already applied',
+      { timeout: 8000 }
+    ).catch(() => null);
+
+    const btnTextNow = await freshBtn.innerText().catch(() => '');
+    if (successIndicator || /applied/i.test(btnTextNow)) {
       console.log(`  🎉 Applied to ${job.title} @ ${job.company}`);
       tracker.insertApplication({ ...job, job_title: job.title, job_url: job.jobUrl, status: 'applied' });
       return 'applied';
     } else {
-      console.warn(`  ⚠️ Apply unverified on Naukri (requires external site completion or questionnaire) — recording as skipped`);
-      tracker.insertApplication({ ...job, job_title: job.title, job_url: job.jobUrl, status: 'skipped', notes: 'Requires manual verification or external site completion' });
+      console.warn(`  ⚠️ Apply unverified on Naukri — recording as skipped`);
+      tracker.insertApplication({ ...job, job_title: job.title, job_url: job.jobUrl, status: 'skipped', notes: 'Requires manual verification' });
       return 'skipped';
     }
 
@@ -313,14 +350,15 @@ function _naukiAgeParam(postedWithin) {
 async function saveSession(context) {
   if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
   const allCookies = await context.cookies();
-  const cookies = allCookies.filter(c => !c.domain || c.domain.includes('naukri.com'));
+  const cookies = allCookies.filter(c => (!c.domain || c.domain.includes('naukri.com')) && !SENSITIVE_BOT_COOKIES.has(c.name));
   fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
 }
 
 async function loadSession(context) {
   if (fs.existsSync(COOKIES_PATH)) {
     const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8'));
-    await context.addCookies(cookies);
+    const safeCookies = (Array.isArray(cookies) ? cookies : []).filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+    await context.addCookies(safeCookies);
     return true;
   }
   return false;
