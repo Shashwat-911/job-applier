@@ -25,6 +25,10 @@ dashboard/dist/
 *.log
 npm-debug.log*
 
+# Browser persistent profile data
+bot/browser_data/
+browser_data/
+
 # OS
 .DS_Store
 Thumbs.db
