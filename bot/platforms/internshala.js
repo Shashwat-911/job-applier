@@ -14,11 +14,14 @@ const BASE_URL = 'https://internshala.com';
 const SESSION_DIR = path.join(__dirname, '..', 'session');
 const SESSION_PATH = path.join(SESSION_DIR, 'internshala.json');
 
+const SENSITIVE_BOT_COOKIES = new Set(['_abck', 'ak_bmsc', 'bm_sz', 'bm_sv', 'bm_s', 'bm_so', 'bm_lso', '__cf_bm']);
+
 async function restoreSession(page) {
   if (fs.existsSync(SESSION_PATH)) {
     try {
       const cookies = JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'));
-      await page.context().addCookies(cookies);
+      const safeCookies = (Array.isArray(cookies) ? cookies : []).filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+      await page.context().addCookies(safeCookies);
     } catch (_) {}
   }
 }
@@ -26,7 +29,7 @@ async function restoreSession(page) {
 async function saveSession(context) {
   if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
   const allCookies = await context.cookies();
-  const cookies = allCookies.filter(c => !c.domain || c.domain.includes('internshala.com'));
+  const cookies = allCookies.filter(c => (!c.domain || c.domain.includes('internshala.com')) && !SENSITIVE_BOT_COOKIES.has(c.name));
   fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
 }
 
@@ -157,19 +160,39 @@ async function apply(page, job, profile) {
       }
     }
 
-    // Cover letter / why should we hire you? (Only fill VISIBLE textareas with short timeout)
+    // Cover letter / why should we hire you?
     const coverLetter = profile.coverLetterTemplate ||
       `I am a passionate software engineer with hands-on experience in ${(professional?.skills || []).slice(0, 4).join(', ') || 'distributed systems and AI'}. I am eager to apply my technical and problem-solving skills to help ${job.company} succeed.`;
 
-    const textAreas = await page.$$('textarea');
-    for (const ta of textAreas) {
-      try {
-        const isVis = await ta.isVisible().catch(() => false);
-        if (isVis) {
-          await ta.fill(coverLetter, { timeout: 2500 }).catch(() => {});
-        }
-      } catch (_) {}
-    }
+    // Internshala uses Quill rich text editor (.ql-editor) where underlying textareas are hidden.
+    // Fill Quill instance, .ql-editor DOM nodes, and raw textareas simultaneously.
+    await page.evaluate((cl) => {
+      // 1. Check window.quill API
+      if (window.quill && typeof window.quill.setText === 'function') {
+        try { window.quill.setText(cl); } catch (_) {}
+      }
+
+      // 2. Check Quill editor DOM containers
+      const qlEditors = document.querySelectorAll('.ql-editor');
+      qlEditors.forEach(el => {
+        try {
+          el.innerText = cl;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('keyup', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        } catch (_) {}
+      });
+
+      // 3. Fallback/sync raw textarea elements
+      const textareas = document.querySelectorAll('textarea');
+      textareas.forEach(ta => {
+        try {
+          ta.value = cl;
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          ta.dispatchEvent(new Event('change', { bubbles: true }));
+        } catch (_) {}
+      });
+    }, coverLetter).catch(() => {});
 
     // Also fill visible required assessment text inputs (e.g. projects, years, links)
     try {
@@ -180,32 +203,47 @@ async function apply(page, job, profile) {
           const val = await inp.inputValue().catch(() => '');
           if (!val) {
             const placeholder = (await inp.getAttribute('placeholder') || '').toLowerCase();
+            let fillVal = '1';
             if (placeholder.includes('github') || placeholder.includes('portfolio') || placeholder.includes('link') || placeholder.includes('url')) {
-              await inp.fill(profile?.personal?.github || 'https://github.com/Shashwat-911').catch(() => {});
+              fillVal = profile?.personal?.github || 'https://github.com/Shashwat-911';
             } else if (placeholder.includes('experience') || placeholder.includes('year') || placeholder.includes('rate') || placeholder.includes('scale')) {
-              await inp.fill(String(professional?.yearsExperience || '1')).catch(() => {});
-            } else {
-              await inp.fill('1').catch(() => {});
+              fillVal = String(professional?.yearsExperience || '1');
             }
+            await inp.fill(fillVal).catch(() => {});
+            await inp.evaluate(el => {
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }).catch(() => {});
           }
         }
       }
     } catch (_) {}
 
-    // Auto-select affirmative radio buttons for availability & location
-    try {
-      const radioButtons = await page.$$('input[type="radio"]');
-      for (const rb of radioButtons) {
-        const isVis = await rb.isVisible().catch(() => false);
-        if (isVis) {
-          const val = (await rb.getAttribute('value') || '').toLowerCase();
-          const name = (await rb.getAttribute('name') || '').toLowerCase();
-          if (val === 'yes' || val === '1' || name.includes('avail') || name.includes('confirm') || name.includes('reloc')) {
-            await rb.check({ force: true }).catch(() => {});
-          }
+    // Auto-select affirmative radio buttons & required checkboxes for availability & terms
+    await page.evaluate(() => {
+      // Affirmative radios
+      const radios = document.querySelectorAll('#radio1, input[name="confirm_availability"][value="yes"], input[type="radio"]');
+      radios.forEach(rb => {
+        const val = (rb.value || '').toLowerCase();
+        const name = (rb.name || '').toLowerCase();
+        const id = (rb.id || '').toLowerCase();
+        if (id === 'radio1' || val === 'yes' || val === '1' || name.includes('avail') || name.includes('confirm') || name.includes('reloc')) {
+          rb.checked = true;
+          rb.click();
+          rb.dispatchEvent(new Event('change', { bubbles: true }));
         }
-      }
-    } catch (_) {}
+      });
+
+      // Required checkboxes
+      const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+      checkboxes.forEach(cb => {
+        if (!cb.checked) {
+          cb.checked = true;
+          cb.click();
+          cb.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      });
+    }).catch(() => {});
 
     const action = await reviewPause(page, {
       jobTitle: job.title,
@@ -217,9 +255,27 @@ async function apply(page, job, profile) {
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
       await humanDelay(500, 1000);
 
+      // Listen for AJAX submission response
+      let submitApiSuccess = false;
+      const submitResponseHandler = async (resp) => {
+        try {
+          const u = resp.url();
+          if (u.includes('/application/submit') && resp.request().method() === 'POST') {
+            const data = await resp.json().catch(() => null);
+            if (data && (data.success || data.applicationId || (data.message && data.message.toLowerCase().includes('success')) || (data.message && data.message.toLowerCase().includes('already applied')))) {
+              submitApiSuccess = true;
+            }
+          }
+        } catch (_) {}
+      };
+      page.on('response', submitResponseHandler);
+
       const submitSelectors = [
         '#submit',
         '#submit_button',
+        '#application_form_submit',
+        '.submit_button_container button',
+        '.submit_button_container [type="submit"]',
         'input[type="submit"]',
         'input[value*="Submit"]',
         'button:has-text("Submit application")',
@@ -250,23 +306,24 @@ async function apply(page, job, profile) {
       if (!submitted) {
         // Fallback: evaluate form submit
         await page.evaluate(() => {
-          const btn = document.querySelector('#submit, input[type="submit"], button[type="submit"], button.submit_button');
+          const btn = document.querySelector('#submit, input[type="submit"], button[type="submit"], button.submit_button, .submit_button_container button');
           if (btn) btn.click();
         }).catch(() => {});
       }
 
-      await humanDelay(2000, 3000);
+      await humanDelay(3000, 4500);
+      page.off('response', submitResponseHandler);
 
       // Verify actual submission acceptance
       const isConfirmed = await page.waitForSelector(
-        '.application_submitted, .success_message, [class*="success"], text=Applied successfully, text=Application submitted, text=Your application has been submitted, text=Successfully applied',
-        { timeout: 5000 }
+        '.application_submitted, .success_message, [class*="success"], #application_submitted_modal, .modal:has-text("Applied"), text=Applied successfully, text=Application submitted, text=Your application has been submitted, text=Successfully applied, text=Already applied, .alert-success',
+        { timeout: 8000 }
       ).catch(() => null);
 
       const currentUrl = page.url();
-      const isUrlSuccess = currentUrl.includes('/application/') || currentUrl.includes('/student/applications') || currentUrl.includes('success');
+      const isUrlSuccess = (currentUrl.includes('/application/') && !currentUrl.includes('/application/form/')) || currentUrl.includes('/student/applications') || currentUrl.includes('success');
 
-      if (isConfirmed || isUrlSuccess) {
+      if (submitApiSuccess || isConfirmed || isUrlSuccess) {
         console.log(`  🎉 Confirmed: Application accepted by Internshala for ${job.title} @ ${job.company}`);
         tracker.insertApplication({
           job_title: job.title,
