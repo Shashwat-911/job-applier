@@ -14,6 +14,8 @@ const BASE_URL = 'https://cutshort.io';
 const SESSION_DIR = path.join(__dirname, '..', 'session');
 const SESSION_PATH = path.join(SESSION_DIR, 'cutshort.json');
 
+const SENSITIVE_BOT_COOKIES = new Set(['_abck', 'ak_bmsc', 'bm_sz', 'bm_sv', 'bm_s', 'bm_so', 'bm_lso', '__cf_bm']);
+
 async function handleGoogleLoginIfNeeded(page) {
   const url = page.url();
   if (url.includes('/login') || url.includes('/signin') || url.includes('accounts.google.com')) {
@@ -28,7 +30,8 @@ async function handleGoogleLoginIfNeeded(page) {
 
     if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
     const cookies = await page.context().cookies();
-    fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
+    const safeCookies = cookies.filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+    fs.writeFileSync(SESSION_PATH, JSON.stringify(safeCookies, null, 2));
   }
 }
 
@@ -36,7 +39,8 @@ async function restoreSession(page) {
   if (fs.existsSync(SESSION_PATH)) {
     try {
       const cookies = JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'));
-      await page.context().addCookies(cookies);
+      const safeCookies = (Array.isArray(cookies) ? cookies : []).filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+      await page.context().addCookies(safeCookies);
     } catch (_) {}
   }
 }
@@ -47,8 +51,9 @@ async function search(page, profile) {
   await restoreSession(page);
 
   for (const role of searchCfg.roles) {
-    const query = encodeURIComponent(role);
-    const searchUrl = `${BASE_URL}/jobs?search=${query}`;
+    const slug = role.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const locSlug = (searchCfg.location || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const searchUrl = `${BASE_URL}/jobs/${slug}-jobs${locSlug ? '-in-' + locSlug : ''}`;
 
     console.log(`\n🔍 Cutshort search: "${role}"`);
     console.log(`   URL: ${searchUrl}`);
@@ -58,31 +63,36 @@ async function search(page, profile) {
       await humanDelay(2500, 4000);
       await handleGoogleLoginIfNeeded(page);
 
-
       if (await detectCaptcha(page)) {
         console.warn('  🤖 CAPTCHA on Cutshort — skipping');
         continue;
       }
 
       const extracted = await page.evaluate((maxPer) => {
-        const cards = document.querySelectorAll('[class*="JobCard"], .job-item, [class*="job-listing"]');
+        const links = document.querySelectorAll('a[href*="/job/"]');
         const results = [];
-        cards.forEach(card => {
+        const seen = new Set();
+        links.forEach(linkEl => {
           if (results.length >= maxPer) return;
           try {
-            const titleEl = card.querySelector('h2, [class*="title"], a[href*="/job/"]');
+            const href = linkEl.href ? linkEl.href.split('?')[0] : '';
+            if (!href || seen.has(href) || href.endsWith('/jobs') || href.endsWith('/jobs/')) return;
+            seen.add(href);
+
+            const card = linkEl.closest('[class*="JobCard"], .job-item, [class*="job-listing"], div[class*="custom"], div[class*="card"], article') || linkEl;
+            const titleEl = card.querySelector('h2, [class*="title"]') || linkEl;
             const compEl = card.querySelector('[class*="company"], .company-name');
             const locEl = card.querySelector('[class*="location"]');
             const salEl = card.querySelector('[class*="salary"]');
-            const linkEl = card.querySelector('a[href*="/job/"]');
 
-            if (!titleEl) return;
+            const title = (titleEl.innerText || linkEl.innerText || '').split('\n')[0].trim();
+            if (!title || title.length < 3) return;
 
             results.push({
-              title: titleEl.innerText.trim(),
+              title,
               company: compEl ? compEl.innerText.trim() : 'Tech Company',
               location: locEl ? locEl.innerText.trim() : 'India / Remote',
-              jobUrl: linkEl ? linkEl.href.split('?')[0] : (titleEl.href ? titleEl.href.split('?')[0] : ''),
+              jobUrl: href,
               salary: salEl ? salEl.innerText.trim() : '',
               platform: 'cutshort',
             });
