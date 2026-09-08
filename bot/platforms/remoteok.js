@@ -61,7 +61,14 @@ async function search(page, profile) {
       }, searchCfg.maxPerRun);
 
       const skipKw = (searchCfg.skipKeywords || []).map(k => k.toLowerCase());
+      const NON_TECH_KEYWORDS = [
+        'driver', 'carpenter', 'domestic', 'technician', 'porter', 'fitter', 'picker',
+        'fire officer', 'clerk', 'joiner', 'walker', 'police', 'attendant', 'tutor',
+        'detailer', 'buyer', 'merchandiser', 'handyman', 'mail carrier', 'estimator', 'roupeiro'
+      ];
       const filtered = extracted.filter(j => {
+        const titleLower = j.title.toLowerCase();
+        if (NON_TECH_KEYWORDS.some(nt => titleLower.includes(nt))) return false;
         const combined = `${j.title} ${j.company}`.toLowerCase();
         if (skipKw.some(kw => combined.includes(kw))) return false;
         if (tracker.isJobAlreadyProcessed && tracker.isJobAlreadyProcessed(j.jobUrl, j.company, j.title)) {
