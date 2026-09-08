@@ -14,6 +14,8 @@ const BASE_URL = 'https://www.workatastartup.com';
 const SESSION_DIR = path.join(__dirname, '..', 'session');
 const SESSION_PATH = path.join(SESSION_DIR, 'workatastartup.json');
 
+const SENSITIVE_BOT_COOKIES = new Set(['_abck', 'ak_bmsc', 'bm_sz', 'bm_sv', 'bm_s', 'bm_so', 'bm_lso', '__cf_bm']);
+
 async function handleGoogleLoginIfNeeded(page) {
   const url = page.url();
   if (url.includes('/login') || url.includes('/signin') || url.includes('/sign_in') || url.includes('accounts.google.com')) {
@@ -29,7 +31,8 @@ async function handleGoogleLoginIfNeeded(page) {
 
     if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
     const cookies = await page.context().cookies();
-    fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
+    const safeCookies = cookies.filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+    fs.writeFileSync(SESSION_PATH, JSON.stringify(safeCookies, null, 2));
   }
 }
 
@@ -37,7 +40,8 @@ async function restoreSession(page) {
   if (fs.existsSync(SESSION_PATH)) {
     try {
       const cookies = JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'));
-      await page.context().addCookies(cookies);
+      const safeCookies = (Array.isArray(cookies) ? cookies : []).filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+      await page.context().addCookies(safeCookies);
     } catch (_) {}
   }
 }
@@ -48,8 +52,8 @@ async function search(page, profile) {
   await restoreSession(page);
 
   for (const role of searchCfg.roles) {
-    const query = encodeURIComponent(role);
-    const searchUrl = `${BASE_URL}/jobs?query=${query}`;
+    const slug = role.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const searchUrl = `${BASE_URL}/jobs/l/${slug}`;
 
     console.log(`\n🔍 Work at a Startup search: "${role}"`);
     console.log(`   URL: ${searchUrl}`);
@@ -59,30 +63,35 @@ async function search(page, profile) {
       await humanDelay(2500, 4000);
       await handleGoogleLoginIfNeeded(page);
 
-
       if (await detectCaptcha(page)) {
         console.warn('  🤖 CAPTCHA on Work at a Startup — skipping');
         continue;
       }
 
       const extracted = await page.evaluate((maxPer) => {
-        const cards = document.querySelectorAll('.job-card, [class*="JobCard"], .company-card');
+        const links = document.querySelectorAll('a[href*="/jobs/"]');
         const results = [];
-        cards.forEach(card => {
+        const seen = new Set();
+        links.forEach(linkEl => {
           if (results.length >= maxPer) return;
           try {
-            const titleEl = card.querySelector('a.job-name, h4 a, [class*="job-title"]');
-            const compEl = card.querySelector('.company-name, h3, [class*="company-title"]');
+            const href = linkEl.href ? linkEl.href.split('?')[0] : '';
+            if (!href || seen.has(href) || href.endsWith('/jobs') || href.endsWith('/jobs/')) return;
+            seen.add(href);
+
+            const title = (linkEl.innerText || '').split('\n')[0].trim();
+            if (!title || title.length < 3) return;
+
+            const card = linkEl.closest('.job-card, [class*="JobCard"], .company-card, tr, li, div[class*="card"], article') || linkEl;
+            const compEl = card.querySelector('.company-name, h3, h4, [class*="company-title"], [class*="company"]');
             const locEl = card.querySelector('.job-details, [class*="location"]');
             const salEl = card.querySelector('.compensation, [class*="salary"]');
 
-            if (!titleEl) return;
-
             results.push({
-              title: titleEl.innerText.trim(),
+              title,
               company: compEl ? compEl.innerText.trim() : 'YC Startup',
-              location: locEl ? locEl.innerText.trim() : 'Remote / SF',
-              jobUrl: titleEl.href ? titleEl.href.split('?')[0] : '',
+              location: locEl ? locEl.innerText.trim() : 'Remote / Global',
+              jobUrl: href,
               salary: salEl ? salEl.innerText.trim() : '',
               platform: 'workatastartup',
             });
