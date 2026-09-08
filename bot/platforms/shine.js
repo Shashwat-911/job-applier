@@ -14,11 +14,14 @@ const BASE_URL = 'https://www.shine.com';
 const SESSION_DIR = path.join(__dirname, '..', 'session');
 const SESSION_PATH = path.join(SESSION_DIR, 'shine.json');
 
+const SENSITIVE_BOT_COOKIES = new Set(['_abck', 'ak_bmsc', 'bm_sz', 'bm_sv', 'bm_s', 'bm_so', 'bm_lso', '__cf_bm']);
+
 async function restoreSession(page) {
   if (fs.existsSync(SESSION_PATH)) {
     try {
       const cookies = JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'));
-      await page.context().addCookies(cookies);
+      const safeCookies = (Array.isArray(cookies) ? cookies : []).filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+      await page.context().addCookies(safeCookies);
     } catch (_) {}
   }
 }
@@ -26,7 +29,7 @@ async function restoreSession(page) {
 async function saveSession(context) {
   if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
   const allCookies = await context.cookies();
-  const cookies = allCookies.filter(c => !c.domain || c.domain.includes('shine.com'));
+  const cookies = allCookies.filter(c => (!c.domain || c.domain.includes('shine.com')) && !SENSITIVE_BOT_COOKIES.has(c.name));
   fs.writeFileSync(SESSION_PATH, JSON.stringify(cookies, null, 2));
 }
 
@@ -36,9 +39,9 @@ async function search(page, profile) {
   await restoreSession(page);
 
   for (const role of searchCfg.roles) {
-    const query = encodeURIComponent(role);
-    const loc = encodeURIComponent(searchCfg.location || '');
-    const searchUrl = `${BASE_URL}/job-search/${query}-jobs${loc ? '-in-' + loc : ''}`;
+    const slug = role.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const locSlug = (searchCfg.location || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const searchUrl = `${BASE_URL}/job-search/${slug}-jobs${locSlug ? '-in-' + locSlug : ''}`;
 
     console.log(`\n🔍 Shine search: "${role}"`);
     console.log(`   URL: ${searchUrl}`);
@@ -54,7 +57,7 @@ async function search(page, profile) {
       }
 
       const extracted = await page.evaluate((maxPer) => {
-        const cards = document.querySelectorAll('div[class*="jobCard"], .search_result_item');
+        const cards = document.querySelectorAll('div[class*="jobCard"], .search_result_item, div[class*="JobCard"], li[class*="jobCard"]');
         const results = [];
         cards.forEach(card => {
           if (results.length >= maxPer) return;
