@@ -79,7 +79,7 @@ const PLATFORM_DOMAINS = {
   internshala: 'internshala.com',
   shine: 'shine.com',
   foundit: 'foundit.in',
-  glassdoor: 'glassdoor.co.in',
+  glassdoor: 'glassdoor.',
   unstop: 'unstop.com',
   cutshort: 'cutshort.io',
   hirist: 'hirist.tech',
@@ -89,16 +89,41 @@ const PLATFORM_DOMAINS = {
 
 async function loadSessionCookiesForPlatform(context, platformName) {
   try {
-    const sessionPath = path.join(__dirname, 'session', `${platformName}.json`);
-    if (fs.existsSync(sessionPath)) {
-      const cookies = JSON.parse(fs.readFileSync(sessionPath, 'utf8') || '[]');
-      if (Array.isArray(cookies) && cookies.length > 0) {
-        const domainFilter = PLATFORM_DOMAINS[platformName] || platformName;
-        const clean = cookies.filter(c => {
-          if (!c || !c.name || !c.value) return false;
-          if (c.name.startsWith('__Host-') || c.name.startsWith('__Secure-')) return false;
-          return !c.domain || c.domain.includes(domainFilter);
-        });
+    const candidateFiles = [
+      path.join(__dirname, 'session', `${platformName}.json`),
+      platformName === 'naukri' ? path.join(__dirname, 'session', 'naukri_cookies.json') : null,
+    ].filter(Boolean);
+
+    for (const sessionPath of candidateFiles) {
+      if (!fs.existsSync(sessionPath)) continue;
+      const raw = fs.readFileSync(sessionPath, 'utf8');
+      if (!raw || raw.trim() === '[]') continue;
+      const cookies = JSON.parse(raw);
+      if (!Array.isArray(cookies) || cookies.length === 0) continue;
+
+      const domainFilter = PLATFORM_DOMAINS[platformName] || platformName;
+      const clean = cookies.filter(c => {
+        if (!c || !c.name || !c.value) return false;
+        const name = (c.name || '').toLowerCase();
+        // NEVER inject stale Akamai/Cloudflare bot fingerprint cookies that trigger WAF Access Denied bans
+        if (name === '_abck' || name.startsWith('bm_') || name === 'ak_bmsc' || name === '__cf_bm') {
+          return false;
+        }
+        const domain = (c.domain || '').toLowerCase();
+        return !domain || domain.includes(domainFilter);
+      }).map(c => {
+        const item = { ...c };
+        // Clean session cookies with invalid negative expires
+        if (item.expires && item.expires <= 0) {
+          delete item.expires;
+        }
+        if (item.sameSite && !['Strict', 'Lax', 'None'].includes(item.sameSite)) {
+          delete item.sameSite;
+        }
+        return item;
+      });
+
+      if (clean.length > 0) {
         await context.addCookies(clean).catch(() => {});
       }
     }
@@ -144,23 +169,33 @@ async function main() {
   // Mark batch apply active so reviewPause auto-approves
   profile.settings = { ...profile.settings, batchApplyActive: true };
 
-  let browser;
+  const browserDataDir = path.join(__dirname, 'browser_data');
+  if (!fs.existsSync(browserDataDir)) {
+    fs.mkdirSync(browserDataDir, { recursive: true });
+  }
+
+  const launchOpts = getBrowserLaunchOptions();
+  launchOpts.viewport = { width: 1280, height: 800 };
+  launchOpts.locale = 'en-US';
+  launchOpts.userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+  let context;
   try {
-    browser = await chromium.launch(getBrowserLaunchOptions());
-  } catch (_) {
-    browser = await chromium.launch({
+    context = await chromium.launchPersistentContext(browserDataDir, launchOpts);
+  } catch (err) {
+    log(`⚠️ Persistent context launch failed (${err.message}), falling back to standard launch...`);
+    const browser = await chromium.launch({
       headless: false,
       slowMo: 50,
       ignoreDefaultArgs: ['--enable-automation'],
       args: ['--no-sandbox', '--disable-blink-features=AutomationControlled'],
     });
+    context = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      locale: 'en-US',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    });
   }
-
-  const context = await browser.newContext({
-    viewport: { width: 1280, height: 800 },
-    locale: 'en-US',
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  });
 
   // Remove Playwright automation fingerprints
   await context.addInitScript(() => {
@@ -168,7 +203,7 @@ async function main() {
     window.chrome = window.chrome || { runtime: {} };
   });
 
-  let page = await context.newPage();
+  let page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
 
   let appliedCount = 0;
   let skippedCount = 0;
@@ -193,7 +228,7 @@ async function main() {
     log(`[${i + 1}/${targetJobs.length}] Applying to: ${job.title} @ ${job.company}`);
     log(`Platform: ${job.platform.toUpperCase()} | URL: ${job.jobUrl || 'N/A'}`);
 
-    if (!browser.isConnected()) {
+    if (context.pages().length === 0 && (!page || page.isClosed())) {
       log('🛑 Browser closed by user. Exiting batch run.');
       break;
     }
@@ -259,7 +294,7 @@ async function main() {
   log(`   Errors:  ${errorCount}`);
   log(`=======================================================\n`);
 
-  await browser.close().catch(() => {});
+  if (context) await context.close().catch(() => {});
   process.exit(0);
 }
 
