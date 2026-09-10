@@ -239,6 +239,22 @@ async function main() {
     // Restore saved authenticated cookies for this platform
     await loadSessionCookiesForPlatform(context, job.platform);
 
+    // Fast-path skip external company ATS redirects (e.g. RemoteOK or company career sites)
+    if (job.isExternal) {
+      log(`🌐 External company career site redirect (manual submission required): ${job.title} @ ${job.company}`);
+      tracker.insertApplication({
+        ...job,
+        job_title: job.title,
+        job_url: job.jobUrl,
+        status: 'skipped',
+        notes: 'External redirect — company career portal application required',
+        salary_range: job.salary,
+        location: job.location,
+      });
+      skippedCount++;
+      continue;
+    }
+
     const platform = PLATFORM_MAP[job.platform];
     if (!platform || !platform.apply) {
       log(`⚠️ No automated apply handler for platform: ${job.platform}. Recording as skipped.`);
