@@ -67,11 +67,13 @@ async function restoreSession(page) {
 async function search(page, profile) {
   const { search: searchCfg } = profile;
   const jobs = [];
+  const seenUrls = new Set();
   await restoreSession(page);
 
   for (const role of searchCfg.roles) {
     const query = encodeURIComponent(role);
-    const searchUrl = `${BASE_URL}/srp/results?query=${query}`;
+    const locParam = encodeURIComponent(searchCfg.location || 'India');
+    const searchUrl = `${BASE_URL}/srp/results?query=${query}&locations=${locParam}&experience=1`;
 
     console.log(`\n🔍 Foundit search: "${role}"`);
     console.log(`   URL: ${searchUrl}`);
@@ -81,7 +83,6 @@ async function search(page, profile) {
       await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       await humanDelay(2000, 3500);
       await handleGoogleLoginIfNeeded(page);
-
 
       if (await detectCaptcha(page)) {
         console.warn('  🤖 CAPTCHA on Foundit — skipping');
@@ -101,21 +102,19 @@ async function search(page, profile) {
 
             if (!titleEl) return;
 
-            let linkEl = card.querySelector('a[href*="/job-desc/"], a[href*="/job/"], a[href*="foundit.in"], a');
+            let linkEl = card.querySelector('a[href*="/job/"], a[href*="/job-desc/"], a[href*="foundit.in"], a');
             if (!linkEl && card.tagName === 'A') linkEl = card;
             let rawUrl = (linkEl && linkEl.href) ? linkEl.href : (titleEl.href || '');
             if (!rawUrl) {
               const dataId = card.getAttribute('data-job-id') || card.getAttribute('data-id') || card.id;
-              if (dataId) rawUrl = `https://www.foundit.in/job-desc/${dataId}`;
+              if (dataId) rawUrl = `https://www.foundit.in/job/${dataId}`;
             }
             if (rawUrl && rawUrl.startsWith('/')) {
               rawUrl = 'https://www.foundit.in' + rawUrl;
             }
             let cleanUrl = rawUrl ? rawUrl.split('?')[0] : '';
-            if (cleanUrl.includes('/job/') && !cleanUrl.includes('/job-desc/')) {
-              cleanUrl = cleanUrl.replace('/job/', '/job-desc/');
-            }
-            if (!cleanUrl || cleanUrl.includes('/career-services/') || cleanUrl.includes('talk-to-us') || !cleanUrl.match(/\/(job|job-desc)\//)) {
+            // Never replace /job/ with /job-desc/ as Foundit redirects /job-desc/ to the user dashboard
+            if (!cleanUrl || cleanUrl.includes('/career-services/') || cleanUrl.includes('talk-to-us') || (!cleanUrl.includes('/job/') && !cleanUrl.includes('/job-desc/'))) {
               return;
             }
 
@@ -135,7 +134,10 @@ async function search(page, profile) {
       const skipKw = (searchCfg.skipKeywords || []).map(k => k.toLowerCase());
       const filtered = extracted.filter(j => {
         const combined = `${j.title} ${j.company}`.toLowerCase();
-        return !skipKw.some(kw => combined.includes(kw));
+        if (skipKw.some(kw => combined.includes(kw))) return false;
+        if (seenUrls.has(j.jobUrl)) return false;
+        seenUrls.add(j.jobUrl);
+        return true;
       });
 
       console.log(`  ✅ Found ${filtered.length} Foundit jobs`);
@@ -154,11 +156,71 @@ async function apply(page, job, profile) {
   try {
     console.log(`\n📋 Opening: ${job.title} @ ${job.company}`);
     await restoreSession(page);
-    // Passing referer prevents Akamai WAF 403 Access Denied block
+
+    try {
+      await page.setExtraHTTPHeaders({
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+      });
+    } catch (_) {}
+
+    // Passing referer helps prevent Akamai WAF 403 Access Denied block
     await page.goto(job.jobUrl, { referer: 'https://www.foundit.in/srp/results', waitUntil: 'domcontentloaded', timeout: 30000 });
     await humanDelay(2000, 3500);
 
+    // Detect Akamai WAF Access Denied immediately
+    const isAccessDenied = await page.evaluate(() => {
+      const t = (document.title || '').toLowerCase();
+      const b = (document.body?.innerText || '').toLowerCase();
+      return t.includes('access denied') || b.includes('access denied') || b.includes("you don't have permission to access");
+    }).catch(() => false);
+
+    if (isAccessDenied) {
+      console.warn(`  🛡️ Foundit Akamai WAF blocked direct page load for ${job.title} @ ${job.company} — clearing cookies & skipping`);
+      await purgeAkamaiCookies(page.context());
+      return 'skipped';
+    }
+
     if (await detectCaptcha(page)) return 'skipped';
+
+    // Verify detail page location
+    const { isAllowedLocation } = require('../helpers/jobFilter');
+    const pageLoc = await page.evaluate(() => {
+      const locEl = document.querySelector('.location, [class*="location"]');
+      return locEl ? locEl.innerText.trim() : '';
+    }).catch(() => '');
+    if (pageLoc) {
+      const locCheck = isAllowedLocation(pageLoc, job.title);
+      if (!locCheck.allowed) {
+        console.warn(`  ⏭ Skipped location restricted Foundit role: ${job.title} @ ${job.company} [${locCheck.reason}]`);
+        return 'skipped';
+      }
+    }
+
+    // Detect if Foundit redirected away from the job posting to seeker dashboard or homepage
+    const isDashboardOrExpired = await page.evaluate(() => {
+      const currentHref = window.location.href.toLowerCase();
+      const text = (document.body?.innerText || '').toLowerCase();
+      const isJobUrl = currentHref.includes('/job/') || currentHref.includes('/job-desc/');
+      const isDashboard = currentHref.includes('/seeker/dashboard') ||
+                          currentHref === 'https://www.foundit.in/' ||
+                          currentHref === 'https://www.foundit.in' ||
+                          (text.includes('welcome back') && text.includes('profile score')) ||
+                          text.includes('view recommended jobs') ||
+                          text.includes('this job has expired') ||
+                          text.includes('job is no longer available');
+      return !isJobUrl || isDashboard;
+    });
+
+    if (isDashboardOrExpired) {
+      console.warn(`  ⚠️ Foundit redirected to dashboard / job expired for ${job.title} @ ${job.company} — skipping`);
+      return 'skipped';
+    }
 
     // Attempt automated credential login first
     await handleLoginIfPrompted(page, profile?.credentials?.foundit || profile?.credentials?.default);
