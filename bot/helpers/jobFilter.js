@@ -26,9 +26,13 @@ const NON_ENGINEERING_BLACKLIST = [
 const HIGH_EXPERIENCE_TITLE_BLACKLIST = [
   'senior', 'sr.', 'sr ', 'lead', 'principal', 'staff',
   'manager', 'architect', 'director', 'head of', 'vp', 'vice president',
-  'team lead', 'tech lead', 'sde 2', 'sde 3', 'sde-2', 'sde-3', 'sde-ii', 'sde-iii',
-  'sde ii', 'sde iii', 'level 2', 'level 3', 'l2', 'l3', 'l4', 'l5', 'l6',
-  'specialist iii', 'engineer iii', 'engineer iv', 'expert', 'chapter lead'
+  'team lead', 'tech lead', 'sde 2', 'sde 3', 'sde 4', 'sde-2', 'sde-3', 'sde-4',
+  'sde-ii', 'sde-iii', 'sde-iv', 'sde ii', 'sde iii', 'sde iv',
+  'level 2', 'level 3', 'level 4', 'l2', 'l3', 'l4', 'l5', 'l6',
+  'specialist iii', 'engineer iii', 'engineer iv', 'expert', 'chapter lead',
+  'lead engineer', 'lead developer', 'principal engineer', 'staff engineer',
+  'engineering manager', 'solution architect', 'system architect', 'enterprise architect',
+  'data architect', 'cloud architect', 'chief architect', 'distinguished engineer', 'fellow'
 ];
 
 const ENGINEERING_WHITELIST = [
@@ -39,6 +43,159 @@ const ENGINEERING_WHITELIST = [
   'data scientist', 'data engineer', 'data science', 'mlops',
   'python', 'java', 'golang', 'c++', 'node', 'react', 'mern', 'angular', 'rust'
 ];
+
+const INDIA_LOCATIONS = [
+  'india', 'bengaluru', 'bangalore', 'delhi', 'new delhi', 'ncr', 'gurgaon', 'gurugram',
+  'noida', 'mumbai', 'pune', 'hyderabad', 'chennai', 'kolkata', 'ahmedabad', 'jaipur',
+  'kochi', 'coimbatore', 'chandigarh', 'indore', 'kerala', 'karnataka', 'maharashtra',
+  'telangana', 'tamil nadu', 'haryana', 'uttar pradesh', 'mysore', 'mysuru', 'bhubaneswar',
+  'lucknow', 'nagpur', 'surat', 'visakhapatnam', 'remote in india', 'india / remote',
+  'remote / india', 'pan india', 'anywhere in india'
+];
+
+const REMOTE_KEYWORDS = [
+  'remote', 'work from home', 'wfh', 'work from anywhere', 'telecommute',
+  'virtual', 'distributed', 'home-based', 'anywhere', 'worldwide remote', 'remote / global'
+];
+
+const FOREIGN_RESTRICTIONS = [
+  'relocation: not allowed', 'relocation not allowed',
+  'visa sponsorship: not available', 'visa sponsorship not available',
+  'no visa sponsorship', 'visa not sponsored',
+  'must reside in the us', 'must reside in the united states',
+  'must be located in the us', 'must be authorized to work in the us',
+  'authorized to work in the us', 'us only', 'u.s. only', 'usa only',
+  'united states only', 'north america only', 'europe only', 'eu only',
+  'uk only', 'canada only'
+];
+
+const FOREIGN_RESTRICTION_REGEXES = [
+  /(?:visa\s*(?:sponsorship)?|sponsorship)\s*[:\-\n•\s]*not\s*available/i,
+  /(?:no\s*visa\s*sponsorship|visa\s*(?:is\s*)?not\s*sponsored)/i,
+  /relocation\s*[:\-\n•\s]*not\s*(?:allowed|covered|provided|sponsored)/i,
+  /must\s*(?:reside|be\s*located)\s*in\s*(?:the\s*)?(?:us|usa|united\s*states|u\.s\.)/i,
+  /authorized\s*to\s*work\s*in\s*(?:the\s*)?(?:us|usa|united\s*states|u\.s\.)\s*without\s*sponsorship/i,
+  /\b(?:us|u\.s\.)\s*citizen(?:ship)?\s*(?:only|required)\b/i,
+  /\b(?:security\s*clearance|secret\s*clearance|top\s*secret|ts\/sci|public\s*trust)\b/i,
+];
+
+const FOREIGN_CITIES_COUNTRIES = [
+  'san francisco', 'new york', 'nyc', 'seattle', 'austin', 'california', 'los angeles',
+  'chicago', 'boston', 'united states', 'usa', 'canada', 'toronto', 'vancouver',
+  'united kingdom', 'london', 'germany', 'berlin', 'munich', 'netherlands',
+  'amsterdam', 'france', 'paris', 'singapore', 'australia', 'sydney', 'melbourne',
+  'ireland', 'dublin', 'switzerland', 'zurich', 'tokyo', 'japan', 'israel',
+  'tysons', 'tysons corner', 'virginia', 'arlington', 'reston', 'mclean', 'alexandria',
+  'washington dc', 'washington d.c.', 'dallas', 'houston', 'atlanta', 'denver',
+  'miami', 'philadelphia', 'phoenix', 'san diego', 'san jose', 'sunnyvale',
+  'mountain view', 'palo alto', 'santa clara', 'redmond', 'bellevue', 'boulder',
+  'cambridge', 'texas', 'florida', 'maryland', 'massachusetts', 'colorado',
+  'illinois', 'north carolina', 'ohio', 'pennsylvania'
+];
+
+/**
+ * Validates work location: user can only work remotely or anywhere within India.
+ * Rejects foreign on-site/hybrid positions and positions with visa/relocation restrictions.
+ */
+function isAllowedLocation(location, title = '', notes = '') {
+  const combined = `${location || ''} ${title || ''} ${notes || ''}`.toLowerCase();
+
+  // 1. Check for explicit relocation/visa blocks or US/EU-only geographic restrictions
+  for (const restr of FOREIGN_RESTRICTIONS) {
+    if (combined.includes(restr)) {
+      return {
+        allowed: false,
+        reason: `Matches location/visa restriction: "${restr}"`
+      };
+    }
+  }
+
+  for (const regex of FOREIGN_RESTRICTION_REGEXES) {
+    const match = combined.match(regex);
+    if (match) {
+      return {
+        allowed: false,
+        reason: `Matches location/visa restriction: "${match[0].trim()}"`
+      };
+    }
+  }
+
+  // Check for US Federal / Government clearance roles (e.g. "Data Scientist (Federal)")
+  if (/\b(?:federal|clearance|security\s*clearance|public\s*trust|ts\/sci)\b/i.test(title)) {
+    return {
+      allowed: false,
+      reason: `Role requires US Federal / Government clearance: "${title}"`
+    };
+  }
+
+  // 2. Check if explicitly marked Remote
+  const isRemote = REMOTE_KEYWORDS.some(kw => combined.includes(kw));
+
+  // 3. Check if located in India
+  const isIndia = INDIA_LOCATIONS.some(kw => {
+    const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(?:^|[^a-zA-Z0-9])${escaped}(?:[^a-zA-Z0-9]|$)`, 'i');
+    return regex.test(combined);
+  });
+
+  // If both Remote and foreign restriction are present, the restriction check above already rejected it.
+  if (isRemote || isIndia) {
+    // Double check that it's not a foreign-only remote role (e.g. "Remote - US Only", "Remote (Tysons, VA)")
+    for (const place of FOREIGN_CITIES_COUNTRIES) {
+      const regex = new RegExp(`(?:^|[^a-zA-Z0-9])${place}(?:[^a-zA-Z0-9]|$)`, 'i');
+      if (regex.test(combined) && !isIndia && (combined.includes('only') || combined.includes('hybrid') || combined.includes('onsite') || combined.includes('on-site'))) {
+        return {
+          allowed: false,
+          reason: `Location is restricted to foreign region: "${place}"`
+        };
+      }
+    }
+    return { allowed: true };
+  }
+
+  // 4. Check for foreign cities/countries without Remote indicator
+  for (const place of FOREIGN_CITIES_COUNTRIES) {
+    const regex = new RegExp(`(?:^|[^a-zA-Z0-9])${place}(?:[^a-zA-Z0-9]|$)`, 'i');
+    if (regex.test(combined)) {
+      return {
+        allowed: false,
+        reason: `Location is foreign non-remote: "${place}" (only Remote or India allowed)`
+      };
+    }
+  }
+
+  // If location is blank and not explicitly foreign, allow if from domestic portal
+  return { allowed: true };
+}
+
+/**
+ * Checks if a posting specifies ineligibility criteria (e.g. College students not allowed).
+ */
+function isEligibleJob(text) {
+  if (!text || typeof text !== 'string') return { eligible: true };
+  const s = text.toLowerCase();
+
+  const ineligiblePhrases = [
+    'college students are not allowed',
+    'college students not allowed',
+    'no college students',
+    'working professionals only',
+    'only for working professionals',
+    'only working professionals',
+    'experienced professionals only',
+    'only 2022/2023',
+    'only 2023 batch',
+    'only 2024 batch'
+  ];
+
+  for (const phrase of ineligiblePhrases) {
+    if (s.includes(phrase)) {
+      return { eligible: false, reason: `Ineligible criteria: "${phrase}"` };
+    }
+  }
+
+  return { eligible: true };
+}
 
 /**
  * Checks if a salary string represents at least minLpa (default 6 LPA).
@@ -93,7 +250,7 @@ function isSalaryAboveThreshold(salaryStr, minLpa = 6) {
 
 /**
  * Checks if the text requires high experience (> 2 years) or senior seniority.
- * Shashwat is a fresher with 9 months of internship experience.
+ * Shashwat is a fresher / entry-level engineer with internship experience.
  */
 function isHighExperienceJob(text) {
   if (!text || typeof text !== 'string') return { isHigh: false };
@@ -107,19 +264,42 @@ function isHighExperienceJob(text) {
     }
   }
 
-  // 2. Check explicit experience ranges (e.g. "Exp - 6+yrs", "3-5 years", "4+ years")
-  const expMatch = s.match(/(?:exp(?:erience)?\s*[:\-]?\s*)?(\d+)\s*(?:\+|-\s*(\d+)|\s*to\s*(\d+))?\s*(?:years?|yrs?)/i);
-  if (expMatch) {
-    const minYears = parseInt(expMatch[1], 10);
-    if (minYears > 2) {
-      return { isHigh: true, reason: `Requires ${minYears}+ years experience (Fresher filter: max 2 years)` };
+  // 2. Check parenthesized experience ranges: e.g. "(10-12 yrs)", "(5-10 yrs)", "(4-10 yrs)", "(5-7 yrs)", "(10-13 yrs)"
+  const parenMatch = s.match(/\(\s*(\d+)\s*(?:-|to|\+)\s*(\d+)?\s*(?:years?|yrs?)\s*\)/i);
+  if (parenMatch) {
+    const minYears = parseInt(parenMatch[1], 10);
+    const maxYears = parenMatch[2] ? parseInt(parenMatch[2], 10) : minYears;
+    if (minYears > 2 || maxYears > 3) {
+      return { isHigh: true, reason: `Requires ${minYears}-${maxYears} years experience (Fresher filter: max 2 years)` };
     }
   }
 
-  // 3. Check standalone "X+ yrs"
+  // 3. Check explicit experience ranges: e.g. "5-10 yrs", "10-12 yrs", "2-5 years", "Exp - 6+yrs", "3-5 years"
+  const expMatch = s.match(/(?:exp(?:erience)?\s*[:\-]?\s*)?(\d+)\s*(?:\+|-\s*(\d+)|\s*to\s*(\d+))\s*(?:years?|yrs?)/i);
+  if (expMatch) {
+    const minYears = parseInt(expMatch[1], 10);
+    const maxYears = parseInt(expMatch[2] || expMatch[3] || expMatch[1], 10);
+    if (minYears > 2 || maxYears > 3) {
+      return { isHigh: true, reason: `Requires ${minYears}-${maxYears} years experience (Fresher filter: max 2 years)` };
+    }
+  }
+
+  // 4. Check standalone "X+ yrs" / "X+ years" (e.g. "3+ yrs", "5+ years")
   const plusYrsMatch = s.match(/\b([3-9]|\d{2,})\s*\+\s*(?:years?|yrs?)/i);
   if (plusYrsMatch) {
     return { isHigh: true, reason: `Requires ${plusYrsMatch[1]}+ years experience (Fresher filter: max 2 years)` };
+  }
+
+  // 5. Check "minimum X years" / "at least X years"
+  const minYearsMatch = s.match(/\b(?:min(?:imum)?|at\s*least)\s*([3-9]|\d{2,})\s*(?:years?|yrs?)/i);
+  if (minYearsMatch) {
+    return { isHigh: true, reason: `Requires at least ${minYearsMatch[1]} years experience (Fresher filter: max 2 years)` };
+  }
+
+  // 6. Check "X years of experience"
+  const ofExpMatch = s.match(/\b([3-9]|\d{2,})\s*(?:years?|yrs?)\s*(?:of\s*)?exp/i);
+  if (ofExpMatch) {
+    return { isHigh: true, reason: `Requires ${ofExpMatch[1]}+ years experience (Fresher filter: max 2 years)` };
   }
 
   return { isHigh: false };
@@ -127,7 +307,7 @@ function isHighExperienceJob(text) {
 
 /**
  * Validates whether a job posting is a genuine pure Software / AI / ML job
- * and satisfies the user's role, fresher experience, and salary requirements.
+ * and satisfies the user's role, fresher experience, salary, and location requirements.
  */
 function isDesiredEngineeringJob(job, options = {}) {
   const minLpa = options.minLpa || 6;
@@ -160,13 +340,27 @@ function isDesiredEngineeringJob(job, options = {}) {
     }
   }
 
-  // 2. High-experience / Senior check (Fresher with 9mo experience requirement)
-  const expCheck = isHighExperienceJob(job.title + ' ' + (job.salary || '') + ' ' + (job.notes || ''));
+  // 2. High-experience / Senior check (Fresher with 0-2 yrs max requirement)
+  const expCheck = isHighExperienceJob(
+    (job.title || '') + ' ' + (job.salary || '') + ' ' + (job.notes || '') + ' ' + (job.location || '')
+  );
   if (expCheck.isHigh) {
     return { valid: false, reason: expCheck.reason };
   }
 
-  // 3. Must match pure software / AI / ML engineering keywords (strictly word-bounded for single words / acronyms)
+  // 3. Location filter (Remote anywhere, or anywhere within India only)
+  const locCheck = isAllowedLocation(job.location, job.title, job.notes);
+  if (!locCheck.allowed) {
+    return { valid: false, reason: locCheck.reason };
+  }
+
+  // 4. Eligibility check (e.g. College students not allowed)
+  const eligCheck = isEligibleJob((job.title || '') + ' ' + (job.notes || ''));
+  if (!eligCheck.eligible) {
+    return { valid: false, reason: eligCheck.reason };
+  }
+
+  // 5. Must match pure software / AI / ML engineering keywords (strictly word-bounded for single words / acronyms)
   const isEng = ENGINEERING_WHITELIST.some(kw => {
     if (kw.includes(' ')) {
       return title.includes(kw);
@@ -180,17 +374,17 @@ function isDesiredEngineeringJob(job, options = {}) {
     return { valid: false, reason: `Title "${job.title}" does not contain software / AI / ML engineering role keywords` };
   }
 
-  // 4. Must have a valid URL
+  // 6. Must have a valid URL
   if (!job.jobUrl || typeof job.jobUrl !== 'string' || !job.jobUrl.startsWith('http')) {
     return { valid: false, reason: 'Missing or invalid job posting URL' };
   }
 
-  // 5. Check for closed postings
+  // 7. Check for closed postings
   if (title.includes('closed') || company.includes('closed')) {
     return { valid: false, reason: 'Job is marked as closed' };
   }
 
-  // 6. Salary check (at least 6 LPA)
+  // 8. Salary check (at least 6 LPA)
   if (job.salary && !isSalaryAboveThreshold(job.salary, minLpa)) {
     return { valid: false, reason: `Salary "${job.salary}" is below ${minLpa} LPA threshold` };
   }
@@ -202,7 +396,12 @@ module.exports = {
   isDesiredEngineeringJob,
   isSalaryAboveThreshold,
   isHighExperienceJob,
+  isAllowedLocation,
+  isEligibleJob,
   NON_ENGINEERING_BLACKLIST,
   ENGINEERING_WHITELIST,
   HIGH_EXPERIENCE_TITLE_BLACKLIST,
+  INDIA_LOCATIONS,
+  REMOTE_KEYWORDS,
 };
+
