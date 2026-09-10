@@ -13,6 +13,7 @@ const BASE_URL = 'https://remoteok.com';
 async function search(page, profile) {
   const { search: searchCfg } = profile;
   const jobs = [];
+  const seenUrls = new Set();
 
   for (const role of searchCfg.roles) {
     const slug = role.toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -54,6 +55,7 @@ async function search(page, profile) {
               jobUrl: fullUrl.split('?')[0],
               salary: salEl ? salEl.innerText.trim() : '',
               platform: 'remoteok',
+              isExternal: true,
             });
           } catch (_) {}
         });
@@ -71,9 +73,11 @@ async function search(page, profile) {
         if (NON_TECH_KEYWORDS.some(nt => titleLower.includes(nt))) return false;
         const combined = `${j.title} ${j.company}`.toLowerCase();
         if (skipKw.some(kw => combined.includes(kw))) return false;
+        if (seenUrls.has(j.jobUrl)) return false;
         if (tracker.isJobAlreadyProcessed && tracker.isJobAlreadyProcessed(j.jobUrl, j.company, j.title)) {
           return false;
         }
+        seenUrls.add(j.jobUrl);
         return true;
       });
 
@@ -96,6 +100,18 @@ async function apply(page, job, profile) {
     await humanDelay(2000, 3500);
 
     if (await detectCaptcha(page)) return 'skipped';
+
+    // Verify detail page location
+    const { isAllowedLocation } = require('../helpers/jobFilter');
+    const pageLoc = await page.evaluate(() => {
+      const locEl = document.querySelector('.location');
+      return locEl ? locEl.innerText.trim() : '';
+    }).catch(() => '');
+    const locCheck = isAllowedLocation(pageLoc || job.location, job.title);
+    if (!locCheck.allowed) {
+      console.warn(`  ⏭ Skipped location restricted RemoteOK role: ${job.title} @ ${job.company} [${locCheck.reason}]`);
+      return 'skipped';
+    }
 
     const applyBtn = await page.$('a.action-apply, a:has-text("Apply for this job"), button:has-text("Apply")');
     if (!applyBtn) {
