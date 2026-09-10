@@ -36,6 +36,7 @@ async function saveSession(context) {
 async function search(page, profile) {
   const { search: searchCfg } = profile;
   const jobs = [];
+  const seenUrls = new Set();
   await restoreSession(page);
 
   for (const role of searchCfg.roles) {
@@ -89,9 +90,11 @@ async function search(page, profile) {
       const filtered = extracted.filter(j => {
         const combined = `${j.title} ${j.company}`.toLowerCase();
         if (skipKw.some(kw => combined.includes(kw))) return false;
+        if (seenUrls.has(j.jobUrl)) return false;
         if (tracker.isJobAlreadyProcessed && tracker.isJobAlreadyProcessed(j.jobUrl, j.company, j.title)) {
           return false;
         }
+        seenUrls.add(j.jobUrl);
         return true;
       });
 
@@ -118,6 +121,20 @@ async function apply(page, job, profile) {
     await handleLoginIfPrompted(page, profile?.credentials?.internshala || profile?.credentials?.default);
 
     if (await detectCaptcha(page)) return 'skipped';
+
+    // Verify detail page location
+    const { isAllowedLocation } = require('../helpers/jobFilter');
+    const pageLoc = await page.evaluate(() => {
+      const locEl = document.querySelector('.location_link, .locations, [class*="location"]');
+      return locEl ? locEl.innerText.trim() : '';
+    }).catch(() => '');
+    if (pageLoc) {
+      const locCheck = isAllowedLocation(pageLoc, job.title);
+      if (!locCheck.allowed) {
+        console.warn(`  ⏭ Skipped location restricted Internshala role: ${job.title} @ ${job.company} [${locCheck.reason}]`);
+        return 'skipped';
+      }
+    }
 
     // Dismiss subscription alert, promotional overlays or popups
     try {
