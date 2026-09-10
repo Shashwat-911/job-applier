@@ -62,6 +62,7 @@ function buildFieldMap(profile) {
 async function search(page, profile) {
   const { search: searchCfg } = profile;
   const jobs = [];
+  const seenUrls = new Set();
   await restoreSession(page);
 
   for (const role of searchCfg.roles) {
@@ -103,7 +104,7 @@ async function search(page, profile) {
             results.push({
               title,
               company: companyEl ? companyEl.innerText.trim() : 'Startup',
-              location: locationEl ? locationEl.innerText.trim() : 'Remote / Hybrid',
+              location: locationEl ? locationEl.innerText.trim() : '',
               jobUrl: href,
               salary: salaryEl ? salaryEl.innerText.trim() : '',
               platform: 'wellfound',
@@ -115,8 +116,11 @@ async function search(page, profile) {
 
       const skipKw = (searchCfg.skipKeywords || []).map(k => k.toLowerCase());
       const filtered = extracted.filter(j => {
-        const combined = `${j.title} ${j.company}`.toLowerCase();
-        return !skipKw.some(kw => combined.includes(kw));
+        const combined = `${j.title} ${j.company} ${j.location}`.toLowerCase();
+        if (skipKw.some(kw => combined.includes(kw))) return false;
+        if (seenUrls.has(j.jobUrl)) return false;
+        seenUrls.add(j.jobUrl);
+        return true;
       });
 
       console.log(`  ✅ Found ${filtered.length} Wellfound jobs`);
@@ -134,6 +138,7 @@ async function search(page, profile) {
 async function apply(page, job, profile) {
   const { personal, professional } = profile;
   const fieldMap = buildFieldMap(profile);
+  const { isAllowedLocation } = require('../helpers/jobFilter');
 
   try {
     console.log(`\n📋 Opening: ${job.title} @ ${job.company}`);
@@ -149,6 +154,43 @@ async function apply(page, job, profile) {
     await handleLoginIfPrompted(page, profile?.credentials?.wellfound || profile?.credentials?.default);
     await handleGoogleLoginIfNeeded(page);
 
+    // Deep check detail page metadata: Location, Visa sponsorship, Relocation, Federal clearance
+    const pageMeta = await page.evaluate(() => {
+      const bText = (document.body?.innerText || '');
+      let locText = '';
+      let visaText = '';
+      let relocText = '';
+
+      const allElements = Array.from(document.querySelectorAll('div, span, h3, h4, p, label'));
+      for (const el of allElements) {
+        const t = (el.innerText || '').trim().toLowerCase();
+        if (t === 'location' && el.nextElementSibling) {
+          locText = (el.nextElementSibling.innerText || '').trim();
+        }
+        if (t === 'visa sponsorship' && el.nextElementSibling) {
+          visaText = (el.nextElementSibling.innerText || '').trim();
+        }
+        if (t === 'relocation' && el.nextElementSibling) {
+          relocText = (el.nextElementSibling.innerText || '').trim();
+        }
+      }
+
+      return {
+        bText: bText.slice(0, 4000),
+        locText,
+        visaText,
+        relocText,
+      };
+    });
+
+    const fullLoc = `${pageMeta.locText} ${job.location || ''}`.trim();
+    const fullNotes = `${pageMeta.visaText} ${pageMeta.relocText} ${pageMeta.bText}`;
+    const locCheck = isAllowedLocation(fullLoc, job.title, fullNotes);
+
+    if (!locCheck.allowed) {
+      console.warn(`  ⏭ Skipped location/visa restricted Wellfound role: ${job.title} @ ${job.company} [${locCheck.reason}]`);
+      return 'skipped';
+    }
 
     const applyBtn = await page.$('button:has-text("Apply"), button:has-text("Quick Apply"), [data-test="ApplyButton"]');
     if (!applyBtn) {
@@ -156,11 +198,24 @@ async function apply(page, job, profile) {
       return 'skipped';
     }
 
-    await applyBtn.click();
+    // Check if the Apply button is disabled (prevents 30s click timeout)
+    const isBtnDisabled = await applyBtn.evaluate(b => 
+      b.disabled || 
+      b.getAttribute('aria-disabled') === 'true' || 
+      b.classList.contains('disabled')
+    ).catch(() => false);
+
+    if (isBtnDisabled) {
+      console.warn(`  ⚠️ Wellfound apply button is disabled (location/eligibility restriction) for ${job.title} @ ${job.company} — skipping`);
+      return 'skipped';
+    }
+
+    await applyBtn.click({ timeout: 2500 }).catch(async () => {
+      await applyBtn.evaluate(b => b.click()).catch(() => {});
+    });
     await humanDelay(2000, 3000);
 
     await handleLoginIfPrompted(page, profile?.credentials?.wellfound || profile?.credentials?.default);
-
 
     // Note to founder / note to recruiter
     const noteText = profile.coverLetterTemplate ||
@@ -178,7 +233,22 @@ async function apply(page, job, profile) {
 
     if (action === 'submit') {
       const submitBtn = await page.$('button[type="submit"], button:has-text("Submit Application"), button:has-text("Send")');
-      if (submitBtn) await submitBtn.click();
+      if (submitBtn) {
+        const isSubmitDisabled = await submitBtn.evaluate(b => 
+          b.disabled || 
+          b.getAttribute('aria-disabled') === 'true' || 
+          b.classList.contains('disabled')
+        ).catch(() => false);
+
+        if (isSubmitDisabled) {
+          console.warn(`  ⚠️ Wellfound submit button is disabled (missing required fields / eligibility restriction) for ${job.title} @ ${job.company} — skipping`);
+          return 'skipped';
+        }
+
+        await submitBtn.click({ timeout: 2500 }).catch(async () => {
+          await submitBtn.evaluate(b => b.click()).catch(() => {});
+        });
+      }
       await humanDelay(2000, 3000);
 
       tracker.insertApplication({
