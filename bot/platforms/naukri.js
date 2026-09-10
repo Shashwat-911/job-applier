@@ -163,13 +163,15 @@ async function search(page, profile) {
           const companyEl = card.querySelector('a.comp-name, .comp-name, [class*="comp-name"], a[class*="company"], .subTitle, a.subTitle, [title*="Career"]');
           const locEl     = card.querySelector('span.loc-wrap, .loc-wrap, .location, [class*="location"]');
           const salaryEl  = card.querySelector('span.sal-wrap, .sal-wrap, .salary, [class*="salary"]');
+          const expEl     = card.querySelector('span.exp-wrap, .exp-wrap, .experience, [class*="experience"], [class*="exp"]');
           const linkEl    = card.querySelector('a.title, a[href*="job-listings"], a[href*="/job-"]') || titleEl;
 
           if (!titleEl) return;
 
           const title   = titleEl.innerText.trim();
           const company = companyEl?.innerText.trim() || 'Company';
-          const combined = `${title} ${company}`.toLowerCase();
+          const expText = expEl?.innerText.trim() || '';
+          const combined = `${title} ${company} ${expText}`.toLowerCase();
           if (skip && skip.some(kw => combined.includes(kw))) return;
 
           const jobHref = (linkEl && linkEl.href) ? linkEl.href : (titleEl && titleEl.href ? titleEl.href : '');
@@ -181,6 +183,7 @@ async function search(page, profile) {
             location: locEl?.innerText.trim() || '',
             jobUrl:   jobHref,
             salary:   salaryEl?.innerText.trim() || '',
+            notes:    expText,
             platform: 'naukri',
             isExternal: Boolean(card.innerText && card.innerText.toLowerCase().includes('apply on company site')),
           });
