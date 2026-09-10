@@ -53,6 +53,7 @@ async function restoreSession(page) {
 async function search(page, profile) {
   const { search: searchCfg } = profile;
   const jobs = [];
+  const seenUrls = new Set();
   await restoreSession(page);
 
   for (const role of searchCfg.roles) {
@@ -113,7 +114,10 @@ async function search(page, profile) {
       const skipKw = (searchCfg.skipKeywords || []).map(k => k.toLowerCase());
       const filtered = extracted.filter(j => {
         const combined = `${j.title} ${j.company}`.toLowerCase();
-        return !skipKw.some(kw => combined.includes(kw));
+        if (skipKw.some(kw => combined.includes(kw))) return false;
+        if (seenUrls.has(j.jobUrl)) return false;
+        seenUrls.add(j.jobUrl);
+        return true;
       });
 
       console.log(`  ✅ Found ${filtered.length} Glassdoor jobs`);
@@ -136,7 +140,39 @@ async function apply(page, job, profile) {
     await humanDelay(2000, 3500);
     await handleGoogleLoginIfNeeded(page);
 
+    // Check if Glassdoor job is closed / expired ("Job is OOO") immediately
+    const isClosedOrOOO = await page.evaluate(() => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      const title = (document.title || '').toLowerCase();
+      return text.includes('job is ooo') ||
+             text.includes('just kidding') ||
+             (text.includes('not here') && text.includes('search recently posted')) ||
+             text.includes('this job is no longer available') ||
+             text.includes('job has expired') ||
+             text.includes('this job listing has expired') ||
+             title.includes('job is ooo');
+    }).catch(() => false);
+
+    if (isClosedOrOOO) {
+      console.warn(`  ⏭ Glassdoor job is no longer available ("Job is OOO" / expired) for ${job.title} @ ${job.company} — skipping`);
+      return 'skipped';
+    }
+
     if (await detectCaptcha(page)) return 'skipped';
+
+    // Check location from detail page if present
+    const { isAllowedLocation } = require('../helpers/jobFilter');
+    const pageLoc = await page.evaluate(() => {
+      const locEl = document.querySelector('[data-test="emp-location"], [class*="JobDetails_location"], [class*="location"]');
+      return locEl ? locEl.innerText.trim() : '';
+    }).catch(() => '');
+    if (pageLoc) {
+      const locCheck = isAllowedLocation(pageLoc, job.title);
+      if (!locCheck.allowed) {
+        console.warn(`  ⏭ Skipped location restricted Glassdoor role: ${job.title} @ ${job.company} [${locCheck.reason}]`);
+        return 'skipped';
+      }
+    }
 
     // Handle login prompt if one appears
     await handleLoginIfPrompted(page, profile?.credentials?.glassdoor || profile?.credentials?.default);
