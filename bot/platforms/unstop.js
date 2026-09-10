@@ -18,20 +18,26 @@ const SENSITIVE_BOT_COOKIES = new Set(['_abck', 'ak_bmsc', 'bm_sz', 'bm_sv', 'bm
 
 async function handleGoogleLoginIfNeeded(page) {
   const url = page.url();
-  if (url.includes('/login') || url.includes('/signin') || url.includes('/auth') || url.includes('accounts.google.com')) {
-    console.log('👉 Please log in manually in the browser window...');
-    await page.waitForFunction(
-      () => !window.location.href.includes('/login') && 
-            !window.location.href.includes('/signin') &&
-            !window.location.href.includes('accounts.google.com'),
-      { timeout: 120000 }
-    );
-    console.log('✅ Logged in successfully');
+  if (url.includes('/login') || url.includes('/signin') || url.includes('accounts.google.com')) {
+    const isBatch = process.env.BATCH_APPLY_ACTIVE === 'true';
+    const waitTimeout = isBatch ? 15000 : 45000;
+    console.log(`👉 Please log in manually in the browser window (waiting up to ${waitTimeout / 1000}s)...`);
+    try {
+      await page.waitForFunction(
+        () => !window.location.href.includes('/login') && 
+              !window.location.href.includes('/signin') &&
+              !window.location.href.includes('accounts.google.com'),
+        { timeout: waitTimeout }
+      );
+      console.log('✅ Logged in successfully');
 
-    if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
-    const cookies = await page.context().cookies();
-    const safeCookies = cookies.filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
-    fs.writeFileSync(SESSION_PATH, JSON.stringify(safeCookies, null, 2));
+      if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+      const cookies = await page.context().cookies();
+      const safeCookies = cookies.filter(c => !SENSITIVE_BOT_COOKIES.has(c.name));
+      fs.writeFileSync(SESSION_PATH, JSON.stringify(safeCookies, null, 2));
+    } catch (_) {
+      console.warn('  ⚠️ Login wait timed out — continuing');
+    }
   }
 }
 
@@ -48,6 +54,7 @@ async function restoreSession(page) {
 async function search(page, profile) {
   const { search: searchCfg } = profile;
   const jobs = [];
+  const seenUrls = new Set();
   await restoreSession(page);
 
   for (const role of searchCfg.roles) {
@@ -110,7 +117,10 @@ async function search(page, profile) {
       const skipKw = (searchCfg.skipKeywords || []).map(k => k.toLowerCase());
       const filtered = extracted.filter(j => {
         const combined = `${j.title} ${j.company}`.toLowerCase();
-        return !skipKw.some(kw => combined.includes(kw));
+        if (skipKw.some(kw => combined.includes(kw))) return false;
+        if (seenUrls.has(j.jobUrl)) return false;
+        seenUrls.add(j.jobUrl);
+        return true;
       });
 
       console.log(`  ✅ Found ${filtered.length} Unstop jobs`);
@@ -131,12 +141,36 @@ async function apply(page, job, profile) {
     await restoreSession(page);
     await page.goto(job.jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await humanDelay(2000, 3500);
+    await handleLoginIfPrompted(page, profile?.credentials?.unstop || profile?.credentials?.default);
     await handleGoogleLoginIfNeeded(page);
 
     if (await detectCaptcha(page)) return 'skipped';
 
-    await handleLoginIfPrompted(page, profile?.credentials?.unstop || profile?.credentials?.default);
-    await handleGoogleLoginIfNeeded(page);
+    // Verify detail page location
+    const { isAllowedLocation } = require('../helpers/jobFilter');
+    const pageLoc = await page.evaluate(() => {
+      const locEl = document.querySelector('.location, [class*="location"]');
+      return locEl ? locEl.innerText.trim() : '';
+    }).catch(() => '');
+    if (pageLoc) {
+      const locCheck = isAllowedLocation(pageLoc, job.title);
+      if (!locCheck.allowed) {
+        console.warn(`  ⏭ Skipped location restricted Unstop role: ${job.title} @ ${job.company} [${locCheck.reason}]`);
+        return 'skipped';
+      }
+    }
+
+    // Pre-check for explicit ineligibility on job page
+    const pageIneligible = await page.evaluate(() => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      return text.includes('college students are not allowed') ||
+             text.includes('college students not allowed') ||
+             (text.includes('working professionals only') && !text.includes('students'));
+    });
+    if (pageIneligible) {
+      console.warn(`  ⏭ Unstop role restricts eligibility ("College Students are not allowed") for ${job.title} @ ${job.company} — skipping`);
+      return 'skipped';
+    }
 
     // Wait for dynamic Angular hydration on Unstop
     const applySelectors = [
@@ -218,6 +252,22 @@ async function apply(page, job, profile) {
           if (dontAllow) await dontAllow.click().catch(() => {});
         } catch (_) {}
 
+        // Immediate check: Did Unstop display an eligibility rejection modal?
+        const hasIneligibilityModal = await page.evaluate(() => {
+          const text = (document.body?.innerText || '').toLowerCase();
+          return text.includes('you are not eligible') ||
+                 text.includes('college students are not allowed') ||
+                 (text.includes('eligibility') && text.includes('not match the following eligibility criteria'));
+        });
+
+        if (hasIneligibilityModal) {
+          console.warn(`  ⏭ Unstop eligibility rejection: "College Students are not allowed" for ${job.title} @ ${job.company} — skipping`);
+          // Click "Ok, I understand" button to dismiss
+          const okBtn = await page.$('button:has-text("Ok, I understand"), button:has-text("Ok"), button:has-text("I understand")');
+          if (okBtn) await okBtn.click().catch(() => {});
+          return 'skipped';
+        }
+
         // Auto-upload resume if file input is present
         try {
           if (profile?.professional?.resumePath) {
@@ -248,7 +298,8 @@ async function apply(page, job, profile) {
             const maleRadio = document.querySelector('input[name="user_gender"][value="male"], input#un-radio-5-input');
             if (maleRadio) { maleRadio.checked = true; maleRadio.click(); maleRadio.dispatchEvent(new Event('change', { bubbles: true })); }
 
-            const userTypeRadio = document.querySelector('input[name="user_type"][value="college_students"], input#un-radio-13-input, input[name="user_type"]');
+            // User type radio: select if unselected
+            const userTypeRadio = document.querySelector('input[name="user_type"][value="college_students"], input#un-radio-13-input');
             if (userTypeRadio && !userTypeRadio.checked) {
               userTypeRadio.checked = true;
               userTypeRadio.click();

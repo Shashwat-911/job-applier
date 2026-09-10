@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { fillField, uploadResume, humanDelay, detectCaptcha, safeClick, handleLoginIfPrompted } = require('../helpers/formFiller');
 const { reviewPause } = require('../helpers/reviewPause');
+const { isHighExperienceJob } = require('../helpers/jobFilter');
 const tracker = require('../../db/tracker');
 
 const BASE_URL = 'https://www.hirist.tech';
@@ -36,11 +37,13 @@ async function saveSession(context) {
 async function search(page, profile) {
   const { search: searchCfg } = profile;
   const jobs = [];
+  const seenUrls = new Set();
   await restoreSession(page);
 
   for (const role of searchCfg.roles) {
     const slug = role.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-    const searchUrl = `${BASE_URL}/search/${slug}?ref=homepage`;
+    // Append minexp=0&maxexp=2 to restrict Hirist results to Fresher / 0-2 years entry-level positions
+    const searchUrl = `${BASE_URL}/search/${slug}?minexp=0&maxexp=2&ref=homepage`;
 
     console.log(`\n🔍 Hirist search: "${role}"`);
     console.log(`   URL: ${searchUrl}`);
@@ -70,10 +73,12 @@ async function search(page, profile) {
             const titleEl = card.querySelector('.job-title, a[class*="title"], h3, h4') || linkEl;
             const compEl = card.querySelector('.company-name, [class*="company"], [class*="recruiter"]');
             const locEl = card.querySelector('.location, [class*="location"]');
-            const expEl = card.querySelector('.experience, [class*="exp"], [class*="salary"]');
+            const expEl = card.querySelector('.experience, [class*="experience"], [class*="exp"], span.years, [class*="years"], .c-badge, [class*="salary"]');
 
             const title = (titleEl.innerText || '').split('\n')[0].trim();
             if (!title || title.length < 3) return;
+
+            const cardText = (card.innerText || '').trim();
 
             results.push({
               title,
@@ -81,6 +86,7 @@ async function search(page, profile) {
               location: locEl ? locEl.innerText.trim() : 'India',
               jobUrl: href,
               salary: expEl ? expEl.innerText.trim() : '',
+              notes: cardText,
               platform: 'hirist',
             });
           } catch (_) {}
@@ -90,8 +96,11 @@ async function search(page, profile) {
 
       const skipKw = (searchCfg.skipKeywords || []).map(k => k.toLowerCase());
       const filtered = extracted.filter(j => {
-        const combined = `${j.title} ${j.company}`.toLowerCase();
-        return !skipKw.some(kw => combined.includes(kw));
+        const combined = `${j.title} ${j.company} ${j.notes}`.toLowerCase();
+        if (skipKw.some(kw => combined.includes(kw))) return false;
+        if (seenUrls.has(j.jobUrl)) return false;
+        seenUrls.add(j.jobUrl);
+        return true;
       });
 
       console.log(`  ✅ Found ${filtered.length} Hirist jobs`);
@@ -115,6 +124,21 @@ async function apply(page, job, profile) {
     await handleLoginIfPrompted(page, profile?.credentials?.hirist || profile?.credentials?.default);
 
     if (await detectCaptcha(page)) return 'skipped';
+
+    // Safety guard: Verify experience requirement on the job detail page before clicking apply
+    const detailPageInfo = await page.evaluate(() => {
+      const pageTitle = document.title || '';
+      const heading = document.querySelector('h1, .job-title, [class*="title"]')?.innerText || '';
+      const expBadge = document.querySelector('[class*="experience"], [class*="exp"], span.years, [class*="years"], .c-badge')?.innerText || '';
+      const firstSection = (document.body?.innerText || '').slice(0, 1500);
+      return `${pageTitle} ${heading} ${expBadge} ${firstSection}`;
+    });
+
+    const expCheck = isHighExperienceJob(detailPageInfo);
+    if (expCheck.isHigh) {
+      console.warn(`  ⏭ Skipped high-experience Hirist role on detail page: ${expCheck.reason} for ${job.title} @ ${job.company}`);
+      return 'skipped';
+    }
 
     const applyBtn = await page.$('button:has-text("Apply"), a:has-text("Apply"), .apply-button');
     if (!applyBtn) {
