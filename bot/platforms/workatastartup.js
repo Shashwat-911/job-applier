@@ -49,6 +49,7 @@ async function restoreSession(page) {
 async function search(page, profile) {
   const { search: searchCfg } = profile;
   const jobs = [];
+  const seenUrls = new Set();
   await restoreSession(page);
 
   for (const role of searchCfg.roles) {
@@ -86,11 +87,16 @@ async function search(page, profile) {
             const compEl = card.querySelector('.company-name, h3, h4, [class*="company-title"], [class*="company"]');
             const locEl = card.querySelector('.job-details, [class*="location"]');
             const salEl = card.querySelector('.compensation, [class*="salary"]');
+            const cardText = (card.innerText || '').toLowerCase();
+            let loc = locEl ? locEl.innerText.trim() : '';
+            if (!loc && (cardText.includes('remote') || cardText.includes('work from anywhere'))) {
+              loc = 'Remote';
+            }
 
             results.push({
               title,
               company: compEl ? compEl.innerText.trim() : 'YC Startup',
-              location: locEl ? locEl.innerText.trim() : 'Remote / Global',
+              location: loc,
               jobUrl: href,
               salary: salEl ? salEl.innerText.trim() : '',
               platform: 'workatastartup',
@@ -102,8 +108,11 @@ async function search(page, profile) {
 
       const skipKw = (searchCfg.skipKeywords || []).map(k => k.toLowerCase());
       const filtered = extracted.filter(j => {
-        const combined = `${j.title} ${j.company}`.toLowerCase();
-        return !skipKw.some(kw => combined.includes(kw));
+        const combined = `${j.title} ${j.company} ${j.location}`.toLowerCase();
+        if (skipKw.some(kw => combined.includes(kw))) return false;
+        if (seenUrls.has(j.jobUrl)) return false;
+        seenUrls.add(j.jobUrl);
+        return true;
       });
 
       console.log(`  ✅ Found ${filtered.length} Work at a Startup jobs`);
@@ -128,12 +137,36 @@ async function apply(page, job, profile) {
 
     if (await detectCaptcha(page)) return 'skipped';
 
+    // Verify detail page location
+    const { isAllowedLocation } = require('../helpers/jobFilter');
+    const pageLoc = await page.evaluate(() => {
+      const locEl = document.querySelector('.job-details, [class*="location"], [class*="Location"]');
+      return locEl ? locEl.innerText.trim() : '';
+    }).catch(() => '');
+    const fullLoc = `${pageLoc} ${job.location || ''}`.trim();
+    const locCheck = isAllowedLocation(fullLoc, job.title);
+    if (!locCheck.allowed) {
+      console.warn(`  ⏭ Skipped location restricted Work at a Startup role: ${job.title} @ ${job.company} [${locCheck.reason}]`);
+      return 'skipped';
+    }
+
     await handleLoginIfPrompted(page, profile?.credentials?.workatastartup || profile?.credentials?.default);
     await handleGoogleLoginIfNeeded(page);
 
     const applyBtn = await page.$('a:has-text("Apply"), button:has-text("Apply"), button:has-text("Interested")');
     if (!applyBtn) {
       console.warn('  ⚠️ No apply button on Work at a Startup');
+      return 'skipped';
+    }
+
+    const isBtnDisabled = await applyBtn.evaluate(b => 
+      b.disabled || 
+      b.getAttribute('aria-disabled') === 'true' || 
+      b.classList.contains('disabled')
+    ).catch(() => false);
+
+    if (isBtnDisabled) {
+      console.warn(`  ⚠️ Apply button is disabled on Work at a Startup for ${job.title} @ ${job.company} — skipping`);
       return 'skipped';
     }
 
