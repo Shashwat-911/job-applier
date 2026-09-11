@@ -64,19 +64,43 @@ async function login(page, profile) {
     await page.waitForLoadState('domcontentloaded', { timeout: 15000 });
     await humanDelay(2000, 3000);
 
-    // Check if login was successful by looking for user-specific elements
-    const loggedIn = await page.$('.nI-gNb-header__name, .user-name, [class*="username"]').then(Boolean).catch(() => false);
+    // Robust login verification: check URL + multiple profile element selectors
+    const postLoginUrl = page.url();
+    const urlLoggedIn = !postLoginUrl.includes('/nlogin') && !postLoginUrl.includes('/login') && 
+                        (postLoginUrl.includes('naukri.com') && !postLoginUrl.includes('/checkpoint'));
 
-    if (loggedIn) {
+    const elementLoggedIn = await page.evaluate(() => {
+      const selectors = [
+        '.nI-gNb-header__name', '.user-name', '[class*="username"]',
+        '.nI-gNb-drawer__avatar', '.nI-gNb-icon-active',
+        'a[href*="/mnjuser/profile"]', '[class*="profileName"]',
+        '.user-info', '.nI-gNb-header__right'
+      ];
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el && el.innerText && el.innerText.trim().length > 0) return true;
+      }
+      // Also check if we're on the homepage with personalized content
+      return document.querySelector('.nI-gNb-header') !== null && 
+             document.querySelector('.nI-gNb-header__right') !== null;
+    }).catch(() => false);
+
+    if (urlLoggedIn && elementLoggedIn) {
       console.log('  ✅ Naukri login successful');
-      // Save session
+      if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+      const cookies = await page.context().cookies();
+      fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
+      return true;
+    } else if (urlLoggedIn) {
+      // URL changed but couldn't find profile elements — still optimistic but warn
+      console.warn('  ⚠️ Naukri login URL OK but profile elements not found — proceeding cautiously');
       if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
       const cookies = await page.context().cookies();
       fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
       return true;
     } else {
-      console.warn('  ⚠️  Naukri login may have failed — continuing anyway');
-      return true; // optimistic
+      console.warn('  ❌ Naukri login failed — still on login page. Skipping platform.');
+      return false;
     }
   } catch (err) {
     console.error('  ❌ Naukri login error:', err.message);

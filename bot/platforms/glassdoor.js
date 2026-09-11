@@ -56,7 +56,14 @@ async function search(page, profile) {
   const seenUrls = new Set();
   await restoreSession(page);
 
+  let captchaCircuitBroken = false;  // Circuit breaker: skip all remaining roles after first WAF block
+
   for (const role of searchCfg.roles) {
+    if (captchaCircuitBroken) {
+      console.log(`  ⚡ Circuit breaker active — skipping "${role}" (Glassdoor is blocking this session)`);
+      continue;
+    }
+
     const encodedRole = encodeURIComponent(role);
     const encodedLoc = encodeURIComponent(searchCfg.location || '');
     const searchUrl = `${BASE_URL}/Job/jobs.htm?sc.keyword=${encodedRole}&locT=C&locKeyword=${encodedLoc}&fromAge=7&applicationType=1`;
@@ -70,7 +77,8 @@ async function search(page, profile) {
       await handleGoogleLoginIfNeeded(page);
 
       if (await detectCaptcha(page)) {
-        console.warn('  🤖 CAPTCHA on Glassdoor — skipping');
+        console.warn('  🤖 CAPTCHA on Glassdoor — activating circuit breaker, skipping all remaining Glassdoor roles');
+        captchaCircuitBroken = true;
         continue;
       }
 

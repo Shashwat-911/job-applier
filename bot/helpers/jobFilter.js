@@ -40,7 +40,7 @@ const ENGINEERING_WHITELIST = [
   'backend', 'frontend', 'full stack', 'fullstack', 'web developer',
   'ai', 'ml', 'machine learning', 'artificial intelligence', 'deep learning',
   'nlp', 'llm', 'generative ai', 'genai', 'computer vision', 'vision', 'agentic',
-  'data scientist', 'data engineer', 'data science', 'mlops',
+  'data scientist', 'data engineer', 'data science', 'data analyst', 'mlops',
   'python', 'java', 'golang', 'c++', 'node', 'react', 'mern', 'angular', 'rust'
 ];
 

@@ -169,16 +169,38 @@ async function apply(page, job, profile) {
       });
     } catch (_) {}
 
-    // Passing referer helps prevent Akamai WAF 403 Access Denied block
+    // Warm up: visit homepage first to establish a legitimate browsing session
+    await page.goto('https://www.foundit.in', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+    await humanDelay(1500, 2500);
+    await purgeAkamaiCookies(page.context());
+
+    // Navigate to job page with referer from the homepage
     await page.goto(job.jobUrl, { referer: 'https://www.foundit.in/srp/results', waitUntil: 'domcontentloaded', timeout: 30000 });
     await humanDelay(2000, 3500);
 
     // Detect Akamai WAF Access Denied immediately
-    const isAccessDenied = await page.evaluate(() => {
+    let isAccessDenied = await page.evaluate(() => {
       const t = (document.title || '').toLowerCase();
       const b = (document.body?.innerText || '').toLowerCase();
       return t.includes('access denied') || b.includes('access denied') || b.includes("you don't have permission to access");
     }).catch(() => false);
+
+    // If blocked, try one more approach: clear all cookies and retry from clean slate
+    if (isAccessDenied) {
+      console.warn(`  🛡️ Foundit WAF blocked — retrying with clean cookies...`);
+      await purgeAkamaiCookies(page.context());
+      await humanDelay(2000, 3000);
+      await page.goto('https://www.foundit.in', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+      await humanDelay(1500, 2500);
+      await page.goto(job.jobUrl, { referer: 'https://www.foundit.in/', waitUntil: 'domcontentloaded', timeout: 30000 });
+      await humanDelay(2000, 3500);
+
+      isAccessDenied = await page.evaluate(() => {
+        const t = (document.title || '').toLowerCase();
+        const b = (document.body?.innerText || '').toLowerCase();
+        return t.includes('access denied') || b.includes('access denied') || b.includes("you don't have permission to access");
+      }).catch(() => false);
+    }
 
     if (isAccessDenied) {
       console.warn(`  🛡️ Foundit Akamai WAF blocked direct page load for ${job.title} @ ${job.company} — clearing cookies & skipping`);

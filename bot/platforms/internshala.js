@@ -331,16 +331,39 @@ async function apply(page, job, profile) {
       await humanDelay(3000, 4500);
       page.off('response', submitResponseHandler);
 
-      // Verify actual submission acceptance
+      // Verify actual submission acceptance — expanded checks
       const isConfirmed = await page.waitForSelector(
-        '.application_submitted, .success_message, [class*="success"], #application_submitted_modal, .modal:has-text("Applied"), text=Applied successfully, text=Application submitted, text=Your application has been submitted, text=Successfully applied, text=Already applied, .alert-success',
+        '.application_submitted, .success_message, [class*="success"], #application_submitted_modal, .modal:has-text("Applied"), text=Applied successfully, text=Application submitted, text=Your application has been submitted, text=Successfully applied, text=Already applied, .alert-success, .application-success, [class*="applicationSubmitted"]',
         { timeout: 8000 }
       ).catch(() => null);
 
       const currentUrl = page.url();
       const isUrlSuccess = (currentUrl.includes('/application/') && !currentUrl.includes('/application/form/')) || currentUrl.includes('/student/applications') || currentUrl.includes('success');
 
-      if (submitApiSuccess || isConfirmed || isUrlSuccess) {
+      // Additional checks: scan page body text for success indicators
+      const textConfirmed = await page.evaluate(() => {
+        const body = (document.body?.innerText || '').toLowerCase();
+        return body.includes('application submitted') ||
+               body.includes('applied successfully') ||
+               body.includes('your application has been submitted') ||
+               body.includes('successfully applied') ||
+               body.includes('you have already applied') ||
+               body.includes('already applied to this') ||
+               body.includes('application received');
+      }).catch(() => false);
+
+      // Check if the Apply button changed to "Applied" or is now disabled
+      const buttonChanged = await page.evaluate(() => {
+        const btns = document.querySelectorAll('button, a.btn, .apply_button, #apply_now_button');
+        for (const btn of btns) {
+          const text = (btn.innerText || '').toLowerCase();
+          if (text.includes('applied') || text.includes('already applied')) return true;
+          if (btn.disabled && text.includes('apply')) return true;
+        }
+        return false;
+      }).catch(() => false);
+
+      if (submitApiSuccess || isConfirmed || isUrlSuccess || textConfirmed || buttonChanged) {
         console.log(`  🎉 Confirmed: Application accepted by Internshala for ${job.title} @ ${job.company}`);
         tracker.insertApplication({
           job_title: job.title,

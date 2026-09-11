@@ -252,6 +252,12 @@ async function main() {
         location: job.location,
       });
       skippedCount++;
+      // Remove from queue so it doesn't get re-processed
+      try {
+        const currentQ = JSON.parse(fs.readFileSync(queuePath, 'utf8') || '[]');
+        const updatedQ = currentQ.filter(j => j.jobUrl !== job.jobUrl && `${j.title}-${j.company}` !== `${job.title}-${job.company}`);
+        fs.writeFileSync(queuePath, JSON.stringify(updatedQ, null, 2), 'utf8');
+      } catch (_) {}
       continue;
     }
 
@@ -260,6 +266,12 @@ async function main() {
       log(`⚠️ No automated apply handler for platform: ${job.platform}. Recording as skipped.`);
       tracker.insertApplication({ ...job, job_title: job.title, job_url: job.jobUrl, status: 'skipped', notes: 'Platform apply handler not available' });
       skippedCount++;
+      // Remove from queue so it doesn't get re-processed
+      try {
+        const currentQ = JSON.parse(fs.readFileSync(queuePath, 'utf8') || '[]');
+        const updatedQ = currentQ.filter(j => j.jobUrl !== job.jobUrl && `${j.title}-${j.company}` !== `${job.title}-${job.company}`);
+        fs.writeFileSync(queuePath, JSON.stringify(updatedQ, null, 2), 'utf8');
+      } catch (_) {}
       continue;
     }
 

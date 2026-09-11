@@ -85,10 +85,17 @@ async function search(page, profile) {
   const maxPer  = searchCfg.maxPerRun || 20;
   const skipKw  = (searchCfg.skipKeywords || []).map(k => k.toLowerCase());
 
+  let captchaCircuitBroken = false;  // Circuit breaker: skip all remaining roles after first CAPTCHA
+
   for (const role of searchCfg.roles) {
     if (jobs.length >= maxPer) {
       console.log(`  🎯 Target limit of ${maxPer} jobs reached. Finishing search early.`);
       break;
+    }
+
+    if (captchaCircuitBroken) {
+      console.log(`  ⚡ Circuit breaker active — skipping "${role}" (Indeed is blocking this session)`);
+      continue;
     }
 
     const q = encodeURIComponent(role);
@@ -117,7 +124,7 @@ async function search(page, profile) {
       console.warn('  🤖 Challenge/Verification detected on Indeed.');
       console.warn('  👉 Please solve the verification challenge in the browser window if prompted...');
       let solved = false;
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 3; i++) {
         await humanDelay(4000, 5000);
         if (!(await detectCaptcha(page))) {
           console.log('  ✅ Challenge cleared! Resuming search...');
@@ -126,7 +133,8 @@ async function search(page, profile) {
         }
       }
       if (!solved) {
-        console.warn('  ⚠️ Challenge not resolved — skipping this role');
+        console.warn('  ⚠️ Challenge not resolved — activating circuit breaker, skipping all remaining Indeed roles');
+        captchaCircuitBroken = true;
         continue;
       }
     }

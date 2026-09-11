@@ -206,6 +206,21 @@ async function search(page, profile) {
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(3000);
     await page.waitForLoadState('networkidle').catch(() => {});
+
+    // Re-verify session mid-run: catch authwall redirects
+    const currentUrl = page.url();
+    if (currentUrl.includes('/authwall') || currentUrl.includes('/login') || currentUrl.includes('/uas/')) {
+      console.warn('  ⚠️ LinkedIn session expired mid-run — re-authenticating...');
+      const reAuth = await loginLinkedIn(page, profile);
+      if (!reAuth) {
+        console.warn('  ⚠️ Re-authentication failed — skipping remaining LinkedIn roles');
+        break;
+      }
+      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(3000);
+      await page.waitForLoadState('networkidle').catch(() => {});
+    }
+
     await handleGoogleLoginIfNeeded(page);
 
     if (await detectCaptcha(page)) {
@@ -230,7 +245,7 @@ async function search(page, profile) {
       continue;
     }
 
-    // Extract up to maxPerRun jobs
+    // Extract up to maxPerRun jobs — ONLY those with Easy Apply badge
     const extracted = await page.evaluate(({ selector, maxPer }) => {
       const cards = document.querySelectorAll(selector);
       const results = [];
@@ -245,6 +260,14 @@ async function search(page, profile) {
 
           if (!titleEl || !linkEl) return;
 
+          // Strict Easy Apply check: only collect jobs with Easy Apply badge in the card
+          const cardText = (card.innerText || '').toLowerCase();
+          const hasEasyApply =
+            card.querySelector('[class*="easy-apply"], [class*="easyApply"], .job-card-container__apply-method, [aria-label*="Easy Apply"]') !== null ||
+            cardText.includes('easy apply');
+
+          if (!hasEasyApply) return;
+
           results.push({
             title:    titleEl.innerText.trim(),
             company:  companyEl?.innerText.trim() || 'Unknown',
@@ -252,6 +275,7 @@ async function search(page, profile) {
             jobUrl:   linkEl.href.split('?')[0],
             salary:   salaryEl?.innerText.trim() || '',
             platform: 'linkedin',
+            hasEasyApply: true,
           });
         } catch (_) {}
       });
