@@ -22,8 +22,15 @@ if ! command -v node &>/dev/null; then
   exit 1
 fi
 
-# ── 1. Start API server in background ──────────────────────────────────────
-echo -e "  ${GREEN}[1/3]${NC} Starting API server (port 3001)…"
+# ── 1. Harvest sessions from browser profile ───────────────────────────────
+echo -e "  ${GREEN}[1/4]${NC} Harvesting sessions from Brave profile…"
+if pgrep -x "brave" >/dev/null 2>&1 || pgrep -x "Brave Browser" >/dev/null 2>&1; then
+  echo -e "  ${CYAN}[!]${NC} Note: Make sure Brave is closed for profile extraction."
+fi
+node bot/harvestSessions.js || true
+
+# ── 2. Start API server in background ──────────────────────────────────────
+echo -e "  ${GREEN}[2/4]${NC} Starting API server (port 3001)…"
 node bot/server.js &
 SERVER_PID=$!
 
@@ -36,12 +43,12 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# ── 2. Wait then open browser ───────────────────────────────────────────────
-echo -e "  ${GREEN}[2/3]${NC} Waiting for server to start…"
+# ── 3. Wait then open browser ───────────────────────────────────────────────
+echo -e "  ${GREEN}[3/4]${NC} Waiting for server to start…"
 sleep 3
 
-echo -e "  ${GREEN}[3/3]${NC} Opening dashboard in default browser…"
-URL="http://localhost:5173"
+echo -e "  ${GREEN}[4/4]${NC} Opening dashboard in default browser…"
+URL="http://localhost:5173/run"
 
 # Cross-platform browser open
 if command -v xdg-open &>/dev/null; then
@@ -52,9 +59,9 @@ elif command -v wslview &>/dev/null; then
   wslview "$URL"           # WSL
 fi
 
-# ── 3. Run Vite in foreground ───────────────────────────────────────────────
+# ── 4. Run Vite in foreground ───────────────────────────────────────────────
 echo ""
-echo -e "  Dashboard : ${CYAN}http://localhost:5173${NC}"
+echo -e "  Dashboard : ${CYAN}http://localhost:5173/run${NC}"
 echo -e "  API       : ${CYAN}http://localhost:3001${NC}"
 echo -e "  Press ${BOLD}Ctrl+C${NC} to stop everything."
 echo ""

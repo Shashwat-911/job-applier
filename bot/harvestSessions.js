@@ -67,12 +67,20 @@ async function harvestSessions() {
   console.log('⚠️  Make sure Brave is CLOSED before running this\n');
 
   // Launch with real Brave user data — inherits all existing logins
-  const context = await chromium.launchPersistentContext(getBravePath(), {
-    headless: false,
-    executablePath: getBraveExecutable(),
-    ignoreDefaultArgs: ['--enable-automation'],
-    args: ['--no-first-run', '--no-default-browser-check'],
-  });
+  let context;
+  try {
+    context = await chromium.launchPersistentContext(getBravePath(), {
+      headless: false,
+      executablePath: getBraveExecutable(),
+      ignoreDefaultArgs: ['--enable-automation'],
+      args: ['--no-first-run', '--no-default-browser-check'],
+      timeout: 10000,
+    });
+  } catch (launchErr) {
+    console.error(`\n❌ Could not connect to Brave profile: ${launchErr.message}`);
+    console.error('💡 Please make sure all Brave browser windows are completely closed so the session profile can be read.\n');
+    return;
+  }
 
   const page = await context.newPage();
   let saved = 0;
